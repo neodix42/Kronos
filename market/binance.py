@@ -240,7 +240,10 @@ class BinanceClient:
         return payload
 
     @staticmethod
-    def _frame(rows: list[list[Any]], interval: str) -> pd.DataFrame:
+    def _frame(
+        rows: list[list[Any]], interval: str, *,
+        allow_gaps: bool = False, allow_short_candles: bool = False,
+    ) -> pd.DataFrame:
         if not rows:
             return pd.DataFrame({
                 **{column: pd.Series(dtype="float64") for column in _VALUE_COLUMNS},
@@ -283,9 +286,16 @@ class BinanceClient:
                 ])
             else:
                 expected_close = frame["timestamps"] + _FIXED_INTERVALS[interval] - pd.Timedelta(milliseconds=1)
-            if not frame["close_time"].equals(expected_close.rename("close_time")):
+            # Historic exchange interruptions can produce shortened bars. The
+            # offline exporter preserves and reports these; forecasts stay strict.
+            if allow_short_candles:
+                if (frame["close_time"] < frame["timestamps"]).any() or (
+                    frame["close_time"] > expected_close
+                ).any():
+                    raise ValueError("Candle close time is outside its interval.")
+            elif not frame["close_time"].equals(expected_close.rename("close_time")):
                 raise ValueError("Candle close time does not match its interval.")
-            if len(frame) > 1 and not frame["timestamps"].iloc[1:].reset_index(drop=True).equals(
+            if not allow_gaps and len(frame) > 1 and not frame["timestamps"].iloc[1:].reset_index(drop=True).equals(
                 (expected_close.iloc[:-1] + pd.Timedelta(milliseconds=1)).reset_index(drop=True).rename("timestamps")
             ):
                 raise ValueError("Candle history has gaps; choose a contiguous, supported market history.")

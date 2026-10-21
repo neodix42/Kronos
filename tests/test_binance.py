@@ -11,6 +11,13 @@ from market.binance import BinanceClient, BinanceError, future_timestamps, next_
 
 BASE = pd.Timestamp("2025-01-01", tz="UTC")
 
+# Binance's real historical maintenance candle has an official nonstandard
+# close time. Download exports must preserve it while forecasting stays strict.
+SHORT_HISTORY_CANDLE = [
+    1613012400000, "44582.07000000", "44582.07000000", "44582.07000000", "44582.07000000",
+    "0.00000000", 1613014854773, "0.00000000", 0, "0.00000000", "0.00000000", "0",
+]
+
 
 def candle(stamp, interval="1h", **changes):
     start = to_milliseconds(stamp)
@@ -110,6 +117,26 @@ def test_gap_and_unsorted_rows_rejected_instead_of_fabricated():
         client = mocked_client(BASE + pd.Timedelta(days=1), [rows])
         with pytest.raises(BinanceError, match="gaps|not sorted"):
             client.fetch_candles("BTCUSDT", "1h", start=BASE)
+
+
+def test_short_historical_candle_is_opt_in_and_preserves_official_close():
+    with pytest.raises(BinanceError, match="close time"):
+        BinanceClient._frame([SHORT_HISTORY_CANDLE], "1h")
+
+    result = BinanceClient._frame([SHORT_HISTORY_CANDLE], "1h", allow_short_candles=True)
+    assert result.timestamps.iloc[0] == pd.Timestamp(1613012400000, unit="ms", tz="UTC")
+    assert result.close_time.iloc[0] == pd.Timestamp(1613014854773, unit="ms", tz="UTC")
+    assert result.volume.tolist() == [0.0]
+    assert result.amount.tolist() == [0.0]
+    assert result.close.tolist() == [44582.07]
+
+
+@pytest.mark.parametrize("invalid_close", [1613012399999, 1613016000000])
+def test_allow_short_candles_still_rejects_close_outside_interval(invalid_close):
+    row = SHORT_HISTORY_CANDLE.copy()
+    row[6] = invalid_close
+    with pytest.raises(BinanceError, match="close time"):
+        BinanceClient._frame([row], "1h", allow_short_candles=True)
 
 
 def test_identical_duplicates_are_dropped_and_conflicting_duplicates_rejected():

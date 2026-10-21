@@ -184,6 +184,63 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m pytest tests/test_kronos
 All four regression tests passed. A real GPU forecast through the Web UI was
 also verified; its response is saved in `outputs/setup-webui-forecast.json`.
 
+### Download training candles from Binance or Bybit
+
+Use the installed environment automatically through this executable script:
+
+```bash
+./download_data.sh bybit BTCUSDT 1h 2021-01-01
+./download_data.sh binance BTCUSDT 1h 2021-01-01
+```
+
+Arguments are exchange, exchange symbol, native candle interval, and start date
+(`YYYY-MM-DD`, UTC). Downloads run through exchange server time and include
+only completed candles whose opens are on or after the start date. No account
+or API key is required. The downloader does not load or train a model.
+
+Both exchanges default to **spot**, matching the dashboard. For Bybit USDT/USDC
+contracts, add `--category linear`; inverse contracts use `--category inverse`.
+The category is explicit because Bybit's API otherwise defaults to contracts.
+
+```bash
+./download_data.sh bybit BTCUSDT 1h 2021-01-01 --category linear
+./download_data.sh binance ETHUSDT 4h 2024-01-01 --end-date 2025-01-01 --output data/my_eth.csv
+```
+
+`--end-date` is exclusive. Explicit relative output paths are relative to the
+calling directory; default outputs always go to this repository's `data/`.
+
+For example, the first command creates
+`data/bybit_spot_BTCUSDT_1h_2021-01-01.csv` with exactly these columns:
+
+```text
+timestamps,open,high,low,close,volume,amount
+```
+
+Timestamps are UTC candle opens. `volume` uses base-asset units and `amount`
+uses quote-asset turnover; inverse Bybit units are normalized accordingly.
+Rows are sorted oldest first and duplicate timestamps are checked. Supported
+Bybit intervals are `1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d, 1w, 1M`.
+Binance additionally supports `1s, 8h, 3d`. `1M` means calendar month, while
+`1m` means minute.
+
+If early history is unavailable, candles are missing inside the range, or the
+available history ends early, the command prints a **NOTICE** with the actual
+coverage. It preserves gaps and never invents candles. A `.metadata.json`
+sidecar records coverage and notices. Historical Binance candles with shortened
+durations are retained and reported, including their original close times in
+the metadata. No data produces an explicit notice and
+a nonzero exit status; API failures also return nonzero. Existing CSVs remain
+unchanged if downloading or validating fails. Successful reruns replace the
+CSV and metadata with the new snapshot.
+
+The downloader streams API pages to temporary disk storage so large exports
+can exceed the dashboard's in-memory candle cap. CSVs in `data/` appear in the
+CSV workspace at `/csv`.
+
+API references: [Binance public data](https://developers.binance.com/docs/binance-spot-api-docs/faqs/market_data_only)
+and [Bybit public kline API](https://bybit-exchange.github.io/docs/v5/market/kline).
+
 ### Binance forecasts, market regimes, and walk-forward backtests
 
 Start the local server with `./start-webui.sh`, then open

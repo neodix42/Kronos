@@ -83,3 +83,7 @@ data/qlib/
 data/processed_datasets/
 finetune_csv/finetuned/
 webui/prediction_results/prediction_*.json
+data/binance_*.csv
+data/binance_*.metadata.json
+data/bybit_*.csv
+data/bybit_*.metadata.json
