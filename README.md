@@ -133,9 +133,11 @@ To stop the Web UI and release its loaded models:
 This stops this checkout's user service and direct launches, including custom
 ports. Running it again when the Web UI is already stopped is safe.
 
-Open the URL, select a model and CUDA, and click Load Model after a fresh
-server start. The launcher binds to localhost, disables debug/reload, and uses
-the project environment automatically. Set `PORT=7071` to select another port.
+The homepage loads the Binance forecast dashboard, which loads Kronos-small
+automatically when forecasting. In the CSV workspace at `/csv`, select a
+model and CUDA, then click Load Model after a fresh server start. The launcher
+binds to localhost, disables debug/reload, and uses the project environment
+automatically. Set `PORT=7071` to select another port.
 
 The bundled CSV training configuration uses public model IDs, local paths,
 and a batch size of 2 for the local GPU. To start training when wanted:
@@ -185,8 +187,9 @@ also verified; its response is saved in `outputs/setup-webui-forecast.json`.
 ### Binance forecasts, market regimes, and walk-forward backtests
 
 Start the local server with `./start-webui.sh`, then open
-**http://127.0.0.1:7070/market**. Stop it with `./stop-webui.sh`.
-The CSV workspace remains at `/`.
+**http://localhost:7070/** to see the BTCUSDT actual and forecast prices.
+The dashboard also works at `/market`. Stop it with `./stop-webui.sh`.
+The CSV workspace is available at `/csv`.
 
 The market dashboard downloads Binance spot OHLCV and quote-asset volume
 (`amount`) through the [public market-data API](https://developers.binance.com/docs/binance-spot-api-docs/faqs/market_data_only),

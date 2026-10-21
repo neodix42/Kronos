@@ -315,8 +315,8 @@
       try { error(''); await loadSavedForecast(id); }
       catch (e) { error(`Could not load the saved forecast: ${e.message}`); }
     });
-    try { await loadSymbols(); } catch (e) { error(`Symbol list unavailable: ${e.message} You can still type a Binance symbol.`); }
-    const results = await Promise.allSettled([loadCandles(true, true), loadArchive(null, true), loadLatestBacktest()]);
+    const symbols = loadSymbols().catch((e) => error(`Symbol list unavailable: ${e.message} You can still type a Binance symbol.`));
+    const results = await Promise.allSettled([symbols, loadCandles(true, true), loadArchive(null, true), loadLatestBacktest()]);
     results.forEach((r) => { if (r.status === 'rejected') error(r.reason.message); });
   }
   boot();

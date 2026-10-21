@@ -332,7 +332,12 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
 
 @app.route('/')
 def index():
-    """Home page"""
+    """Open the live Binance forecast dashboard by default."""
+    return render_template('market.html')
+
+@app.route('/csv')
+def csv_workspace():
+    """Legacy workspace for forecasting from local CSV files."""
     return render_template('index.html')
 
 @app.route('/api/data-files')
