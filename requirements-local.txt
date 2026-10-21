@@ -1,0 +1,13 @@
+# Local inference, Web UI, examples, testing, and optional fine-tuning tools.
+-r requirements.txt
+-r webui/requirements.txt
+numpy==1.26.4
+torch==2.7.1
+pytest
+pyarrow==19.0.1
+PyYAML
+pyqlib
+# Avoid Qlib's unconstrained fallback to the obsolete MLflow 1.x package.
+mlflow>=2.0,<3.0
+comet-ml
+akshare

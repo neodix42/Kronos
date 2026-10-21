@@ -74,3 +74,12 @@ venv.bak/
 temp/
 tmp/
 .python-version
+
+# Local setup outputs and links to bundled example datasets
+outputs/
+data/regression_input.csv
+data/HK_ali_09988_kline_5min_all.csv
+data/qlib/
+data/processed_datasets/
+finetune_csv/finetuned/
+webui/prediction_results/prediction_*.json

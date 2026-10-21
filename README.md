@@ -92,6 +92,96 @@ We release a family of pre-trained models with varying capacities to suit differ
 pip install -r requirements.txt
 ```
 
+### Local setup on this machine
+
+The project is installed in `.venv` with Python 3.12 and CUDA-enabled PyTorch
+2.7.1. The Web UI, example, test, CSV training, and Qlib dependencies are
+included. Kronos-mini, Kronos-small, Kronos-base, and both matching tokenizers
+are downloaded to the standard Hugging Face cache.
+
+From the repository root:
+
+```bash
+source .venv/bin/activate
+python examples/prediction_example.py
+```
+
+The two basic prediction examples use `tests/data/regression_input.csv`, a
+bundled historical sample, and work from any directory. The local `data/`
+directory links to that sample and the bundled Alibaba CSV for the Web UI.
+
+The Web UI uses **http://127.0.0.1:7070**. The initial background launch used
+a temporary user service, which can be inspected with:
+
+```bash
+systemctl --user status kronos-webui
+```
+
+The temporary service is removed when stopped or when the user session ends.
+To start the Web UI after stopping it or rebooting, use:
+
+```bash
+./start-webui.sh
+```
+
+To stop the Web UI and release its loaded models:
+
+```bash
+./stop-webui.sh
+```
+
+This stops this checkout's user service and direct launches, including custom
+ports. Running it again when the Web UI is already stopped is safe.
+
+Open the URL, select a model and CUDA, and click Load Model after a fresh
+server start. The launcher binds to localhost, disables debug/reload, and uses
+the project environment automatically. Set `PORT=7071` to select another port.
+
+The bundled CSV training configuration uses public model IDs, local paths,
+and a batch size of 2 for the local GPU. To start training when wanted:
+
+```bash
+cd finetune_csv
+../.venv/bin/python train_sequential.py --config configs/config_ali09988_candle-5min.yaml
+```
+
+The public Qlib daily A-share dataset is installed at `data/qlib/cn_data`.
+This historical demo covers 1999-11-10 through 2020-09-25. The settings in
+`finetune/config.py` use that local path and matching train/validation/test
+ranges; replace the data and update the ranges to work with more recent data.
+Comet logging is disabled until account details are configured. Training has
+not been started.
+
+Qlib preprocessing is complete: `data/processed_datasets/` contains the
+train, validation, and test pickle files. To regenerate them from the
+repository root, run `.venv/bin/python finetune/qlib_data_preprocess.py`.
+
+To recreate the environment with the already installed `uv` tool:
+
+```bash
+uv venv --python 3.12 --seed .venv
+uv pip install --python .venv/bin/python 'torch==2.7.1' --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python .venv/bin/python -r requirements-local.txt
+mkdir -p data
+ln -s ../tests/data/regression_input.csv data/regression_input.csv
+ln -s ../finetune_csv/data/HK_ali_09988_kline_5min_all.csv data/HK_ali_09988_kline_5min_all.csv
+```
+
+The CUDA wheel command follows [PyTorch's official installation instructions](https://pytorch.org/get-started/previous-versions/#v271).
+The local requirements pin NumPy and PyArrow to compatible versions and avoid
+obsolete MLflow metadata. Installed versions are recorded in
+`outputs/installed-packages.txt`.
+
+Verification:
+
+```bash
+.venv/bin/python -m pip check
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m pytest tests/test_kronos_regression.py -q
+```
+
+All four regression tests passed. A real GPU forecast through the Web UI was
+also verified; its response is saved in `outputs/setup-webui-forecast.json`.
+
 ### 📈 Making Forecasts
 
 Forecasting with Kronos is straightforward using the `KronosPredictor` class. It handles data preprocessing, normalization, prediction, and inverse normalization, allowing you to get from raw data to forecasts in just a few lines of code.
@@ -132,7 +222,7 @@ The `predict` method requires three main inputs:
 import pandas as pd
 
 # Load your data
-df = pd.read_csv("./data/XSHG_5min_600977.csv")
+df = pd.read_csv("./tests/data/regression_input.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 # Define context window and prediction length

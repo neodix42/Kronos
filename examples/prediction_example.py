@@ -1,7 +1,10 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
-sys.path.append("../")
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 from model import Kronos, KronosTokenizer, KronosPredictor
 
 
@@ -46,7 +49,8 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 # 3. Prepare Data
-df = pd.read_csv("./data/XSHG_5min_600977.csv")
+# Use the bundled regression fixture so this example runs without external data.
+df = pd.read_csv(PROJECT_ROOT / "tests" / "data" / "regression_input.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 lookback = 400
