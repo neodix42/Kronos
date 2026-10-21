@@ -24,6 +24,9 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
+from webui.market import blueprint as market_blueprint
+app.register_blueprint(market_blueprint)
+
 # Global variables to store models
 tokenizer = None
 model = None

@@ -182,6 +182,79 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m pytest tests/test_kronos
 All four regression tests passed. A real GPU forecast through the Web UI was
 also verified; its response is saved in `outputs/setup-webui-forecast.json`.
 
+### Binance forecasts, market regimes, and walk-forward backtests
+
+Start the local server with `./start-webui.sh`, then open
+**http://127.0.0.1:7070/market**. Stop it with `./stop-webui.sh`.
+The CSV workspace remains at `/`.
+
+The market dashboard downloads Binance spot OHLCV and quote-asset volume
+(`amount`) through the [public market-data API](https://developers.binance.com/docs/binance-spot-api-docs/faqs/market_data_only),
+without an account or API key. It uses UTC, normal Binance candles and excludes
+the current unfinished candle. These correspond to the same Binance spot feed
+on TradingView; another venue, futures, synthetic candles, or timezone can differ.
+Choose a listed pair such as `BTCUSDT` or `ETHUSDT` and a native Binance interval.
+Markets must have at least 512 contiguous closed candles: weekly/monthly pairs
+often do not have enough history. A 24-candle horizon means 24 hours on `1h`,
+and 24 days on `1d`.
+
+Each forecast loads pinned Kronos-small/tokenizer checkpoints, conditions on
+512 candles, and keeps **100 separate 24-candle futures**. Upstream
+`sample_count=100` averages those paths internally; this workflow instead batches
+independent series with `sample_count=1` and preserves all 100 outputs. Small
+inference batches bound memory use; CPU is supported, while GPU is faster.
+The chart displays the forecast median, p10/p90 bounds, optional individual
+paths, and actual candles using locally hosted [Lightweight Charts](https://tradingview.github.io/lightweight-charts/docs).
+
+The default rules are fixed before each backtest:
+
+- **Regime:** TRENDING when at least 70% of terminal sampled closes agree on
+  direction relative to the last observed close; otherwise CHOPPY.
+- **Entry:** spot long only, when TRENDING/BULLISH and estimated net reward/risk
+  is at least 1.5 after costs. Bearish and choppy scenarios hold cash.
+- **Stop:** the wider of 1.5 ATR14 or the terminal p10 price below the reference.
+  **Target:** the forecast median terminal close. Exit after at most 24 candles.
+- **Sizing:** estimated stop risk of 1% of equity, capped at a 25% allocation;
+  no leverage. Gaps can exceed the planned risk budget.
+- **Execution:** enter at the next bar open, rechecking frozen levels and
+  reward/risk; charge fees and adverse slippage on both sides. Stop gaps fill
+  at the worse open; if stop and target are both touched, assume the stop first.
+
+These sample fractions and spreads are **not calibrated probabilities or risk
+bounds**. Fees default to an assumed 10 bps per side and adverse slippage to
+5 bps per fill; edit them for the market/account you intend to study. The app
+does not know your actual commission tier or realized fills and places no orders.
+The backtest uses candle-level fills, constant costs, and no inference latency
+or order-book/market-impact model. Rules are deterministic; no external LLM or
+paid API is called to classify the regime.
+
+“Run 1-year backtest” fetches 365 days plus the 512-candle warmup, performs a
+causal walk-forward replay every 24 candles, marks equity at every candle close,
+and compares net returns with a cost-adjusted buy-and-hold benchmark. The last
+partial window closes at the end of the available test history. Shorter
+intervals require many more model runs; one-second annual history exceeds the
+one-million-candle request cap. Forecast paths are cached to resume repeated
+runs, and completed reports record coverage, checkpoints, rules, and costs.
+
+To observe forecasts over several days, select a saved forecast and enable
+“Refresh actuals every 60s.” Actual candles update while the prediction remains
+frozen. Saved forecasts, jobs, source candles, sample caches, and backtests
+persist under `outputs/market/`; closing the page does not delete them. A newly
+generated forecast creates a separate snapshot. Reopen the dashboard to load
+the most recent forecast and backtest for the selected market.
+
+The same workflow is available from the repository root without a browser:
+
+```bash
+.venv/bin/python -m market forecast --symbol BTCUSDT --interval 1h
+.venv/bin/python -m market backtest --symbol BTCUSDT --interval 1d --days 365 --fee-bps 10 --slippage-bps 5
+# CPU / smaller-memory machine:
+.venv/bin/python -m market forecast --symbol ETHUSDT --interval 1h --device cpu --batch-size 2
+```
+
+Test the data, sampling, API and execution rules with
+`.venv/bin/python -m pytest tests -q`.
+
 ### 📈 Making Forecasts
 
 Forecasting with Kronos is straightforward using the `KronosPredictor` class. It handles data preprocessing, normalization, prediction, and inverse normalization, allowing you to get from raw data to forecasts in just a few lines of code.

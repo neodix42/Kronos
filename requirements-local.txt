@@ -11,3 +11,4 @@ pyqlib
 mlflow>=2.0,<3.0
 comet-ml
 akshare
+requests>=2.31,<3

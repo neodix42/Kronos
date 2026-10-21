@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Kronos · Market laboratory</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='market.css') }}">
+  <script defer src="{{ url_for('static', filename='vendor/lightweight-charts.standalone.production.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='market.js') }}"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/market" aria-label="Kronos market laboratory home"><span class="brand-mark" aria-hidden="true">K</span><span>KRONOS <small>MARKET LABORATORY</small></span></a>
+      <nav aria-label="Main navigation"><a class="active" href="/market" aria-current="page">Live market</a><a href="/">CSV workspace <span aria-hidden="true">↗</span></a></nav>
+      <span class="local-badge"><i aria-hidden="true"></i> Local inference</span>
+    </header>
+
+    <main>
+      <div class="intro"><div><p class="eyebrow">A WINDOW INTO POSSIBLE FUTURES</p><h1>Explore the next <span>24 candles.</span></h1><p class="intro-copy">Live Binance spot data. One hundred sampled futures. A forecast you can revisit as the market unfolds.</p></div><div class="model-tag"><span class="tiny-label">MODEL</span><strong>Kronos-small</strong><span>512 context · 24 forecast · 100 paths</span></div></div>
+
+      <section class="panel setup" aria-labelledby="setup-heading">
+        <div class="section-line"><h2 id="setup-heading">Market & assumptions</h2><span class="muted">Public data · no account required</span></div>
+        <form id="market-form">
+          <div class="control-grid">
+            <label class="field symbol-field" for="symbol">Binance spot symbol<input id="symbol" name="symbol" value="BTCUSDT" list="symbol-list" autocomplete="off" spellcheck="false" maxlength="30" required pattern="[A-Za-z0-9]{3,30}"><datalist id="symbol-list"></datalist></label>
+            <label class="field" for="interval">Candle interval<select id="interval" name="interval"><option value="1m">1 minute</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option><option value="2h">2 hours</option><option value="4h">4 hours</option><option value="6h">6 hours</option><option value="8h">8 hours</option><option value="12h">12 hours</option><option value="1d" selected>1 day</option><option value="3d">3 days</option><option value="1w">1 week</option><option value="1M">1 month</option></select></label>
+            <label class="field" for="fee">Fee per side <span class="unit">bps</span><input id="fee" type="number" value="10" min="0" max="100" step="0.1" required></label>
+            <label class="field" for="slippage">Slippage per side <span class="unit">bps</span><input id="slippage" type="number" value="5" min="0" max="100" step="0.1" required></label>
+            <button class="button primary" type="submit" id="forecast-button"><span aria-hidden="true">✦</span> Forecast 100 paths</button>
+          </div>
+          <p class="form-note">10 bps = 0.10%. Costs apply on both entry and exit. Only closed candles enter the model.</p>
+        </form>
+      </section>
+
+      <div id="error" class="error-banner" role="alert" hidden></div>
+      <section id="job-panel" class="job-panel" aria-live="polite" hidden><div class="job-header"><span class="pulse" aria-hidden="true"></span><strong id="job-label">Preparing forecast</strong><span id="job-percentage"></span></div><progress id="job-progress" max="1" value="0" aria-label="Job progress"></progress><p id="job-message">Loading the model may take a moment.</p></section>
+
+      <section class="panel chart-panel" aria-labelledby="chart-heading">
+        <div class="chart-top"><div><p class="eyebrow">PRICE & PROJECTION</p><h2 id="chart-heading">BTCUSDT <span class="market-interval">/ 1d</span></h2></div><div class="chart-controls"><label class="check"><input type="checkbox" id="auto-refresh"> Refresh actuals every 60s</label><button class="button subtle" id="refresh-button" type="button">↻ Refresh actual candles</button></div></div>
+        <div class="chart-legend"><span><i class="legend-dot actual"></i> Actual candles</span><span><i class="legend-line median"></i> Forecast median</span><span><i class="legend-line bounds"></i> 10th–90th percentiles</span><label class="paths-control" for="path-count">Sample paths <select id="path-count"><option value="0">Hidden</option><option value="20">Show 20</option><option value="100">Show all 100</option></select></label></div>
+        <div class="price-chart-wrap"><div id="price-chart" class="price-chart" role="img" aria-label="Candlestick price chart with frozen Kronos forecast"></div><div id="chart-empty" class="chart-empty"><span aria-hidden="true">⌁</span><strong>Your market, a hundred possibilities.</strong><p>Load actual candles or generate a forecast to begin.</p></div></div>
+        <div class="chart-footer"><span id="chart-status">Waiting for market data</span><span>Times shown in UTC · <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">Charts by TradingView</a></span></div>
+        <div class="archive-row"><label for="saved-forecast">Frozen forecast</label><select id="saved-forecast"><option value="">Select a saved forecast…</option></select><span id="forecast-origin" class="muted">Refresh actuals to compare without changing the prediction.</span></div>
+      </section>
+
+      <div class="insight-grid">
+        <section class="panel regime-panel" aria-labelledby="regime-heading"><p class="eyebrow">01 / MARKET REGIME</p><div class="section-line"><h2 id="regime-heading">Waiting for forecast</h2><span id="direction" class="badge neutral">—</span></div><p class="muted" id="regime-description">Path agreement describes how these samples cluster. It does not establish what the market will do.</p><div class="probability"><div class="probability-labels"><span>Up <strong id="up-probability">—</strong></span><span>Down <strong id="down-probability">—</strong></span></div><div class="probability-track"><span id="probability-fill"></span></div></div><dl class="metric-list"><div><dt>Directional agreement</dt><dd id="agreement">—</dd></div><div><dt>Median terminal return</dt><dd id="median-return">—</dd></div><div><dt>10th–90th return range</dt><dd id="return-range">—</dd></div></dl><p class="risk-note">Model sample spread is not calibrated risk. These percentages describe generated paths, not the probability of profit.</p></section>
+        <section class="panel plan-panel" aria-labelledby="plan-heading"><p class="eyebrow">02 / RULE-BASED SCENARIO</p><div class="section-line"><h2 id="plan-heading">Trade rules</h2><span id="plan-action" class="badge neutral">NO FORECAST</span></div><p class="muted">Spot · long only · assumed costs. Entries execute after the forecast; stops and targets are tested on later candles.</p><dl class="price-rules"><div><dt>Entry</dt><dd id="entry-price">—</dd></div><div><dt>Stop loss</dt><dd id="stop-price">—</dd></div><div><dt>Take profit</dt><dd id="target-price">—</dd></div></dl><ul class="reason-list" id="plan-reasons"><li>Generate a forecast to evaluate the fixed strategy rules.</li></ul><p id="plan-extra" class="risk-note">No exchange connection. This dashboard never places orders.</p></section>
+      </div>
+
+      <section class="panel backtest-panel" aria-labelledby="backtest-heading"><div class="backtest-heading"><div><p class="eyebrow">03 / WALK-FORWARD VALIDATION</p><h2 id="backtest-heading">Put the rules through history.</h2><p class="muted">One year of candles, historical forecast windows, fees and slippage. A 100-path walk-forward run can take substantial time, especially on short intervals or CPU.</p></div><button class="button secondary" id="backtest-button" type="button">Run 1-year backtest <span aria-hidden="true">↗</span></button></div><div id="backtest-empty" class="empty-backtest">Run a backtest to see realized strategy results and compare them with buying and holding.</div><div id="backtest-results" hidden><div class="backtest-metrics"><div><span>Net return</span><strong id="bt-return">—</strong></div><div><span>Buy & hold</span><strong id="bt-benchmark">—</strong></div><div><span>Max drawdown</span><strong id="bt-drawdown">—</strong></div><div><span>Win rate</span><strong id="bt-winrate">—</strong></div><div><span>Closed trades</span><strong id="bt-trades">—</strong></div><div><span>Fees paid</span><strong id="bt-fees">—</strong></div></div><div id="equity-chart" class="equity-chart" role="img" aria-label="Backtest strategy equity curve"></div><p id="backtest-coverage" class="muted"></p><div class="table-wrap"><table><caption>Closed trades</caption><thead><tr><th scope="col">Entry (UTC)</th><th scope="col">Exit (UTC)</th><th scope="col">Entry price</th><th scope="col">Exit price</th><th scope="col">Net P&amp;L</th><th scope="col">Exit rule</th></tr></thead><tbody id="trade-rows"></tbody></table></div><p id="backtest-notes" class="risk-note"></p></div></section>
+      <footer class="page-footer"><span>KRONOS <small>MARKET LABORATORY</small></span><p>Keep forecasts frozen and observe them for several days. Exchange, symbol, candle timezone and data feed can differ from TradingView. Historical or sampled performance does not guarantee future results.</p><div class="chart-attribution"><a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts™</a><small>Copyright (с) 2025 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a></small></div></footer>
+    </main>
+  </div>
+</body>
+</html>
