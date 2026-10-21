@@ -87,3 +87,4 @@ data/binance_*.csv
 data/binance_*.metadata.json
 data/bybit_*.csv
 data/bybit_*.metadata.json
+pretrained/

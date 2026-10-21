@@ -1,360 +1,177 @@
+"""Train a tokenizer, a predictor, or both in chronological CSV experiments."""
+
+from __future__ import annotations
+
+import argparse
+import inspect
+import json
 import os
+from pathlib import Path
 import sys
 import time
-import argparse
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 import torch.distributed as dist
+from huggingface_hub import hf_hub_download
 
-sys.path.append('../')
-from model import Kronos, KronosTokenizer, KronosPredictor
+from model import Kronos, KronosTokenizer
+from finetune_csv.config_loader import CustomFinetuneConfig
+from finetune_csv.data_utils import load_candles, split_manifest
+from finetune_csv.finetune_tokenizer import train_tokenizer, set_seed, setup_logging as tokenizer_logging
+from finetune_csv.finetune_base_model import train_model, setup_logging as predictor_logging
 
-from config_loader import CustomFinetuneConfig
-from finetune_tokenizer import train_tokenizer, set_seed, setup_logging as setup_tokenizer_logging
-from finetune_base_model import train_model, create_dataloaders, setup_logging as setup_basemodel_logging
+
+def initialize_from_architecture(model_class, architecture_path):
+    """Use only the architecture JSON; pretrained tensor weights are never loaded."""
+    local = Path(architecture_path) / "config.json"
+    path = local if local.is_file() else Path(hf_hub_download(architecture_path, "config.json"))
+    architecture = json.loads(path.read_text())
+    parameters = inspect.signature(model_class.__init__).parameters
+    kwargs = {key: value for key, value in architecture.items() if key in parameters and key != "self"}
+    missing = [key for key, param in parameters.items() if key != "self" and
+               param.default is inspect.Parameter.empty and key not in kwargs]
+    if missing:
+        raise ValueError(f"Architecture config is missing required fields: {', '.join(missing)}")
+    return model_class(**kwargs)
+
+
+def checkpoint_exists(path):
+    path = Path(path)
+    return ((path / "config.json").is_file() and
+            ((path / "model.safetensors").is_file() or (path / "pytorch_model.bin").is_file()))
 
 
 class SequentialTrainer:
-    
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path=None):
         self.config = CustomFinetuneConfig(config_path)
         self.rank = int(os.environ.get("RANK", "0"))
         self.world_size = int(os.environ.get("WORLD_SIZE", "1"))
-        self.local_rank = int(os.environ.get("LOCAL_RANK", str(self.config.device_id if hasattr(self.config, 'device_id') else 0)))
-        self.device = self._setup_device()
-        
-        self.config.print_config_summary()
-    
-    def _setup_device(self):
+        self.local_rank = int(os.environ.get("LOCAL_RANK", str(self.config.device_id)))
         if self.config.use_cuda and torch.cuda.is_available():
             torch.cuda.set_device(self.local_rank)
-            device = torch.device(f"cuda:{self.local_rank}")
+            self.device = torch.device(f"cuda:{self.local_rank}")
         else:
-            device = torch.device("cpu")
-        
-        if self.rank == 0:
-            print(f"Using device: {device} (rank={self.rank}, world_size={self.world_size}, local_rank={self.local_rank})")
-        return device
-    
+            self.device = torch.device("cpu")
+        self.config.print_config_summary()
+        print(f"Using device: {self.device}; rank={self.rank}, world_size={self.world_size}")
+
     def _setup_distributed(self):
-        if self.world_size > 1 and torch.cuda.is_available():
-            backend = os.environ.get("DIST_BACKEND", "nccl").lower()
-            if not dist.is_initialized():
-                dist.init_process_group(backend=backend)
-            if self.rank == 0:
-                print(f"Distributed training initialized: backend={backend}, world_size={self.world_size}")
-        else:
-            if self.rank == 0:
-                print("Distributed training not enabled, using single GPU/CPU training")
-    
-    def _check_existing_models(self):
-        tokenizer_exists = os.path.exists(self.config.tokenizer_best_model_path)
-        basemodel_exists = os.path.exists(self.config.basemodel_best_model_path)
-        
-        print(f"Tokenizer model exists: {tokenizer_exists}")
-        print(f"Basemodel model exists: {basemodel_exists}")
-        
-        return tokenizer_exists, basemodel_exists
-    
-    def _create_directories(self):
-        os.makedirs(self.config.tokenizer_save_path, exist_ok=True)
-        os.makedirs(self.config.basemodel_save_path, exist_ok=True)
-        print(f"Created directory: {self.config.tokenizer_save_path}")
-        print(f"Created directory: {self.config.basemodel_save_path}")
-    
+        if self.world_size > 1 and not dist.is_initialized():
+            backend = "nccl" if self.device.type == "cuda" else "gloo"
+            dist.init_process_group(backend=os.environ.get("DIST_BACKEND", backend))
+
+    def _logger(self, tokenizer=False):
+        setup = tokenizer_logging if tokenizer else predictor_logging
+        return setup(self.config.exp_name, str(Path(self.config.base_save_path) / "logs"), self.rank)
+
     def train_tokenizer_phase(self):
-        print("\n" + "="*60)
-        print("Starting Tokenizer Fine-tuning Phase")
-        print("="*60)
-        
-        tokenizer_exists, _ = self._check_existing_models()
-        if tokenizer_exists and self.config.skip_existing:
-            print("Tokenizer model already exists, skipping training")
+        if self.config.skip_existing and checkpoint_exists(self.config.tokenizer_best_model_path):
+            print("Tokenizer checkpoint exists; skipping tokenizer training")
             return True
-        
-        log_dir = os.path.join(self.config.base_save_path, "logs")
-        logger = setup_tokenizer_logging(self.config.exp_name, log_dir, self.rank)
-        
         set_seed(self.config.seed)
-        
-        if getattr(self.config, 'pre_trained_tokenizer', True):
-            logger.info("Loading pretrained tokenizer...")
-            if self.rank == 0:
-                print("Loading pretrained tokenizer...")
+        if self.config.pre_trained_tokenizer:
             tokenizer = KronosTokenizer.from_pretrained(self.config.pretrained_tokenizer_path)
         else:
-            if self.rank == 0:
-                print("pre_trained_tokenizer=False, randomly initializing Tokenizer architecture")
-            import json
-            cfg_path = os.path.join(self.config.pretrained_tokenizer_path, 'config.json')
-            with open(cfg_path, 'r') as f:
-                arch = json.load(f)
-            tokenizer = KronosTokenizer(
-                d_in=arch.get('d_in', 6),
-                d_model=arch.get('d_model', 256),
-                n_heads=arch.get('n_heads', 4),
-                ff_dim=arch.get('ff_dim', 512),
-                n_enc_layers=arch.get('n_enc_layers', 4),
-                n_dec_layers=arch.get('n_dec_layers', 4),
-                ffn_dropout_p=arch.get('ffn_dropout_p', 0.0),
-                attn_dropout_p=arch.get('attn_dropout_p', 0.0),
-                resid_dropout_p=arch.get('resid_dropout_p', 0.0),
-                s1_bits=arch.get('s1_bits', 10),
-                s2_bits=arch.get('s2_bits', 10),
-                beta=arch.get('beta', 0.05),
-                gamma0=arch.get('gamma0', 1.0),
-                gamma=arch.get('gamma', 1.1),
-                zeta=arch.get('zeta', 0.05),
-                group_size=arch.get('group_size', 4)
-            )
+            print("Randomly initializing tokenizer weights from architecture JSON")
+            tokenizer = initialize_from_architecture(KronosTokenizer, self.config.pretrained_tokenizer_path)
         tokenizer = tokenizer.to(self.device)
-        
-        model_size = sum(p.numel() for p in tokenizer.parameters())
-        logger.info(f"Tokenizer parameters: {model_size:,}")
-        if self.rank == 0:
-            print(f"Tokenizer parameters: {model_size:,}")
-        
-        logger.info("=== Training Configuration ===")
-        logger.info(f"Data path: {self.config.data_path}")
-        logger.info(f"Lookback window: {self.config.lookback_window}")
-        logger.info(f"Predict window: {self.config.predict_window}")
-        logger.info(f"Batch size: {self.config.batch_size}")
-        logger.info(f"Learning rate: {self.config.tokenizer_learning_rate}")
-        logger.info(f"Training epochs: {self.config.tokenizer_epochs}")
-        logger.info(f"Device: {self.device}")
-        logger.info(f"Distributed training: False")
-        
-        logger.info("Starting tokenizer fine-tuning training...")
-        if self.rank == 0:
-            print("Starting tokenizer fine-tuning training...")
-        start_time = time.time()
-        best_val_loss = train_tokenizer(
-            tokenizer,
-            self.device,
-            self.config,
-            self.config.tokenizer_save_path,
-            logger,
-        )
-        training_time = time.time() - start_time
-        
-        final_msg = f"Tokenizer training completed! Best validation loss: {best_val_loss:.4f}\nTraining time: {training_time/60:.2f} minutes\nModel saved to: {self.config.tokenizer_save_path}"
-        logger.info(final_msg)
-        if self.rank == 0:
-            print(f"\n{final_msg}")
-        
+        best_loss = train_tokenizer(tokenizer, self.device, self.config,
+                                    self.config.tokenizer_save_path, self._logger(tokenizer=True))
+        self._record_phase("tokenizer", best_loss, self.config.tokenizer_best_model_path)
+        del tokenizer
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
         return True
-    
+
     def train_basemodel_phase(self):
-        print("\n" + "="*60)
-        print("Starting Basemodel Fine-tuning Phase")
-        print("="*60)
-        
-        if getattr(self.config, 'pre_trained_tokenizer', True):
-            if not os.path.exists(self.config.finetuned_tokenizer_path):
-                raise FileNotFoundError(f"Fine-tuned tokenizer does not exist: {self.config.finetuned_tokenizer_path}")
-        
-        _, basemodel_exists = self._check_existing_models()
-        if basemodel_exists and self.config.skip_existing:
-            print("Basemodel model already exists, skipping training")
+        if self.config.skip_existing and checkpoint_exists(self.config.basemodel_best_model_path):
+            print("Predictor checkpoint exists; skipping predictor training")
             return True
-        
-        log_dir = os.path.join(self.config.base_save_path, "logs")
-        logger = setup_basemodel_logging(self.config.exp_name, log_dir, self.rank)
-        
         set_seed(self.config.seed)
-        
-        if getattr(self.config, 'pre_trained_tokenizer', True):
-            logger.info("Loading fine-tuned tokenizer...")
-            if self.rank == 0:
-                print("Loading fine-tuned tokenizer...")
-            tokenizer = KronosTokenizer.from_pretrained(self.config.finetuned_tokenizer_path)
-        else:
-            if self.rank == 0:
-                print("pre_trained_tokenizer=False, randomly initializing Tokenizer architecture for Predictor training")
-            import json
-            cfg_path = os.path.join(self.config.pretrained_tokenizer_path, 'config.json')
-            with open(cfg_path, 'r') as f:
-                arch = json.load(f)
-            tokenizer = KronosTokenizer(
-                d_in=arch.get('d_in', 6),
-                d_model=arch.get('d_model', 256),
-                n_heads=arch.get('n_heads', 4),
-                ff_dim=arch.get('ff_dim', 512),
-                n_enc_layers=arch.get('n_enc_layers', 4),
-                n_dec_layers=arch.get('n_dec_layers', 4),
-                ffn_dropout_p=arch.get('ffn_dropout_p', 0.0),
-                attn_dropout_p=arch.get('attn_dropout_p', 0.0),
-                resid_dropout_p=arch.get('resid_dropout_p', 0.0),
-                s1_bits=arch.get('s1_bits', 10),
-                s2_bits=arch.get('s2_bits', 10),
-                beta=arch.get('beta', 0.05),
-                gamma0=arch.get('gamma0', 1.0),
-                gamma=arch.get('gamma', 1.1),
-                zeta=arch.get('zeta', 0.05),
-                group_size=arch.get('group_size', 4)
-            )
-        tokenizer = tokenizer.to(self.device)
-        
-        if getattr(self.config, 'pre_trained_predictor', True):
-            logger.info("Loading pretrained predictor...")
-            if self.rank == 0:
-                print("Loading pretrained predictor...")
+        tokenizer_path = self.config.finetuned_tokenizer_path
+        # A scratch predictor must reuse the tokenizer learned in stage one.
+        if not tokenizer_path:
+            raise ValueError("Set model_paths.finetuned_tokenizer to the frozen tokenizer checkpoint")
+        tokenizer = KronosTokenizer.from_pretrained(tokenizer_path).to(self.device)
+        tokenizer.eval()
+        tokenizer.requires_grad_(False)
+        if self.config.pre_trained_predictor:
             model = Kronos.from_pretrained(self.config.pretrained_predictor_path)
         else:
-            if self.rank == 0:
-                print("pre_trained_predictor=False, randomly initializing Predictor architecture")
-            import json
-            cfg_path = os.path.join(self.config.pretrained_predictor_path, 'config.json')
-            with open(cfg_path, 'r') as f:
-                arch = json.load(f)
-            print("model_config: ", arch)
-            model = Kronos(
-                s1_bits=arch.get('s1_bits', 10),
-                s2_bits=arch.get('s2_bits', 10),
-                n_layers=arch.get('n_layers', 12),
-                d_model=arch.get('d_model', 832),
-                n_heads=arch.get('n_heads', 16),
-                ff_dim=arch.get('ff_dim', 2048),
-                ffn_dropout_p=arch.get('ffn_dropout_p', 0.2),
-                attn_dropout_p=arch.get('attn_dropout_p', 0.0),
-                resid_dropout_p=arch.get('resid_dropout_p', 0.2),
-                token_dropout_p=arch.get('token_dropout_p', 0.0),
-                learn_te=arch.get('learn_te', True)
-            )
+            print("Randomly initializing predictor weights from architecture JSON")
+            model = initialize_from_architecture(Kronos, self.config.pretrained_predictor_path)
         model = model.to(self.device)
-        
-        model_size = sum(p.numel() for p in model.parameters())
-        logger.info(f"Model parameters: {model_size:,}")
-        if self.rank == 0:
-            print(f"Model parameters: {model_size:,}")
-        
-        logger.info("=== Training Configuration ===")
-        logger.info(f"Data path: {self.config.data_path}")
-        logger.info(f"Lookback window: {self.config.lookback_window}")
-        logger.info(f"Predict window: {self.config.predict_window}")
-        logger.info(f"Batch size: {self.config.batch_size}")
-        logger.info(f"Learning rate: {self.config.predictor_learning_rate}")
-        logger.info(f"Training epochs: {self.config.basemodel_epochs}")
-        logger.info(f"Device: {self.device}")
-        logger.info(f"Tokenizer path: {self.config.finetuned_tokenizer_path}")
-        logger.info(f"Pretrained model path: {self.config.pretrained_predictor_path}")
-        
-        logger.info("Starting fine-tuning training...")
-        if self.rank == 0:
-            print("Starting fine-tuning training...")
-        start_time = time.time()
-        best_val_loss = train_model(
-            model,
-            tokenizer,
-            self.device,
-            self.config,
-            self.config.basemodel_save_path,
-            logger,
-        )
-        training_time = time.time() - start_time
-        
-        final_msg = f"Basemodel training completed! Best validation loss: {best_val_loss:.4f}\nTraining time: {training_time/60:.2f} minutes\nModel saved to: {self.config.basemodel_save_path}"
-        logger.info(final_msg)
-        if self.rank == 0:
-            print(f"\n{final_msg}")
-        
+        if (tokenizer.s1_bits, tokenizer.s2_bits) != (model.s1_bits, model.s2_bits):
+            raise ValueError("Tokenizer codebook sizes do not match predictor architecture")
+        print(f"Frozen tokenizer: {tokenizer_path}; predictor parameters: {sum(p.numel() for p in model.parameters()):,}")
+        best_loss = train_model(model, tokenizer, self.device, self.config,
+                                self.config.basemodel_save_path, self._logger())
+        self._record_phase("predictor", best_loss, self.config.basemodel_best_model_path)
+        del model, tokenizer
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
         return True
-    
+
+    def _record_phase(self, phase, loss, checkpoint):
+        if self.rank != 0:
+            return
+        path = Path(self.config.base_save_path) / "training_manifest.json"
+        manifest = json.loads(path.read_text()) if path.exists() else {}
+        manifest.update(split_manifest(load_candles(self.config), self.config))
+        manifest.update({"tokenizer_path": self.config.finetuned_tokenizer_path,
+                         "pretrained_predictor": self.config.pretrained_predictor_path,
+                         "from_scratch": self.config.from_scratch,
+                         "lookback_window": self.config.lookback_window,
+                         "predict_window": self.config.predict_window,
+                         "seed": self.config.seed})
+        manifest.setdefault("completed_phases", {})[phase] = {
+            "best_validation_loss": float(loss), "checkpoint": checkpoint}
+        path.write_text(json.dumps(manifest, indent=2) + "\n")
+
     def run_training(self):
-        if self.rank == 0:
-            print("Starting Kronos model sequential fine-tuning training")
-            print(f"Experiment name: {self.config.experiment_name}")
-            print(f"Experiment description: {self.config.experiment_description}")
-        
         self._setup_distributed()
-        
-        self._create_directories()
-        
-        tokenizer_exists, basemodel_exists = self._check_existing_models()
-        
-        total_start_time = time.time()
-        
+        for path in (self.config.tokenizer_save_path, self.config.basemodel_save_path):
+            Path(path).mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
+        frame = load_candles(self.config)
+        split_manifest(frame, self.config)
         try:
             if self.config.train_tokenizer:
-                success = self.train_tokenizer_phase()
-                if not success:
-                    print("Tokenizer training failed, terminating training")
-                    return False
-            else:
-                print("Skipping Tokenizer training phase")
-            
+                self.train_tokenizer_phase()
             if self.config.train_basemodel:
-                success = self.train_basemodel_phase()
-                if not success:
-                    print("Basemodel training failed, terminating training")
-                    return False
-            else:
-                print("Skipping Basemodel training phase")
-            
-            total_time = time.time() - total_start_time
-            
-            if self.rank == 0:
-                print("\n" + "="*60)
-                print("Training completed!")
-                print("="*60)
-                print(f"Total training time: {total_time/60:.2f} minutes")
-                print(f"Tokenizer model: {self.config.tokenizer_best_model_path}")
-                print(f"Basemodel model: {self.config.basemodel_best_model_path}")
-                print("="*60)
-            
+                self.train_basemodel_phase()
+            print(f"Training completed in {(time.monotonic() - started) / 60:.2f} minutes")
             return True
-            
-        except Exception as e:
-            if self.rank == 0:
-                print(f"Error occurred during training: {str(e)}")
+        except Exception:
             import traceback
             traceback.print_exc()
             return False
-        
-        finally:
-            pass
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Kronos Model Sequential Fine-tuning Training')
-    parser.add_argument('--config', type=str, default='config.yaml', 
-                       help='Configuration file path (default: config.yaml)')
-    parser.add_argument('--skip-tokenizer', action='store_true', 
-                       help='Skip tokenizer training phase')
-    parser.add_argument('--skip-basemodel', action='store_true', 
-                       help='Skip basemodel training phase')
-    parser.add_argument('--skip-existing', action='store_true', 
-                       help='Skip training for existing models')
-    
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--skip-tokenizer", action="store_true")
+    parser.add_argument("--skip-basemodel", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true")
     args = parser.parse_args()
-    
     trainer = SequentialTrainer(args.config)
-    
     if args.skip_tokenizer:
         trainer.config.train_tokenizer = False
     if args.skip_basemodel:
         trainer.config.train_basemodel = False
     if args.skip_existing:
         trainer.config.skip_existing = True
-    
-    success = trainer.run_training()
-    
-    if success:
-        print("Training completed successfully!")
+    try:
+        success = trainer.run_training()
+    finally:
         if dist.is_available() and dist.is_initialized():
-            dist.barrier()
             dist.destroy_process_group()
-        sys.exit(0)
-    else:
-        print("Training failed!")
-        if dist.is_available() and dist.is_initialized():
-            try:
-                dist.barrier()
-                dist.destroy_process_group()
-            except Exception:
-                pass
-        sys.exit(1)
+    raise SystemExit(0 if success else 1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,74 @@
+data:
+  data_path: finetune_csv/finetuned/my_btc_small/dataset/candles.csv
+  interval: 1h
+  lookback_window: 488
+  predict_window: 24
+  max_context: 512
+  clip: 5.0
+  train_ratio: 0.7
+  val_ratio: 0.1
+  test_ratio: 0.2
+  sha256: 6074616723efa0acab5df26af5512ce1f502dcb59e56c976b5c7407a34d3fc8c
+training:
+  basemodel_epochs: 3
+  tokenizer_epochs: 3
+  batch_size: 2
+  num_workers: 2
+  log_interval: 50
+  seed: 42
+  predictor_learning_rate: 1.0e-05
+  tokenizer_learning_rate: 0.0002
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+  accumulation_steps: 1
+model_paths:
+  pretrained_predictor: pretrained/Kronos-small
+  pretrained_tokenizer: pretrained/Kronos-Tokenizer-base
+  exp_name: my_btc_small
+  base_path: finetune_csv/finetuned
+  base_save_path: finetune_csv/finetuned/my_btc_small
+  finetuned_tokenizer: pretrained/Kronos-Tokenizer-base
+  tokenizer_save_name: tokenizer
+  basemodel_save_name: basemodel
+model:
+  from_scratch: false
+experiment:
+  name: my_btc_small
+  description: BTCUSDT 1h finetune; chronological held-out test
+  use_comet: false
+  train_tokenizer: false
+  train_basemodel: true
+  skip_existing: false
+  pre_trained_tokenizer: true
+  pre_trained_predictor: true
+  exchange: bybit
+  category: spot
+  symbol: BTCUSDT
+  interval: 1h
+  start_date: '2021-01-01'
+  mode: finetune
+  dataset_manifest: finetune_csv/finetuned/my_btc_small/dataset-manifest.json
+  source_data_path: data/bybit_spot_BTCUSDT_1h_2021-01-01.csv
+device:
+  use_cuda: true
+  device_id: 0
+evaluation:
+  exchange: bybit
+  category: spot
+  symbol: BTCUSDT
+  interval: 1h
+  sample_count: 100
+  batch_size: 8
+  seed: 42
+  temperature: 1.0
+  top_k: 0
+  top_p: 0.9
+  stride: 24
+  fee_bps: 10.0
+  slippage_bps: 5.0
+  initial_equity: 10000
+  consensus_threshold: 0.7
+  risk_fraction: 0.01
+  max_position_fraction: 0.25
+  minimum_reward_risk: 1.5

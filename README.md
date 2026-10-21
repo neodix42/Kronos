@@ -184,6 +184,117 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m pytest tests/test_kronos
 All four regression tests passed. A real GPU forecast through the Web UI was
 also verified; its response is saved in `outputs/setup-webui-forecast.json`.
 
+### Interactive training wizard
+
+From any directory, run this checkout's `wizard.sh` (or run the following from
+the repository root):
+
+```bash
+./wizard.sh
+```
+
+The wizard asks for exchange, market category, symbol, candle interval, start
+date, experiment name, training mode, epochs, batch size, forecast sample count,
+cost assumptions and dashboard port. Press Enter to use each displayed default.
+Defaults select Bybit spot BTCUSDT, hourly candles from 2021-01-01, predictor-only
+fine-tuning, three epochs and port **7071**. The existing dashboard stays on 7070.
+
+The wizard then performs these steps automatically:
+
+1. Reuse the matching downloaded CSV or call `download_data.sh` when missing.
+   Print its coverage notices. Copy candles and download metadata into the
+   experiment's own `dataset/` directory, so later downloads cannot change it.
+2. Create independent local copies of the pinned original weights in
+   `pretrained/Kronos-small` and `pretrained/Kronos-Tokenizer-base`. Check hashes
+   before reusing these copies. The original models are never trained in place.
+3. Write **`finetune_csv/configs/my_btc_small.yaml`** and freeze a CSV hash and
+   chronological split manifest. Use exactly these data/training defaults:
+
+   ```yaml
+   data:
+     lookback_window: 488
+     predict_window: 24
+     max_context: 512
+     clip: 5.0
+     train_ratio: 0.7
+     val_ratio: 0.1
+     test_ratio: 0.2
+   training:
+     basemodel_epochs: 3
+     batch_size: 2
+     num_workers: 2
+     log_interval: 50
+     seed: 42
+     predictor_learning_rate: 0.00001
+   model_paths:
+     pretrained_predictor: pretrained/Kronos-small
+   ```
+
+4. Fine-tune the predictor with the original tokenizer frozen. Select the best
+   checkpoint using validation loss. Split raw rows before creating windows;
+   training/validation windows stay within their own partitions and cannot cross
+   missing candle slots. Normalize each window using only its 488 past candles.
+5. Load the trained checkpoint and compare it against original Kronos-small on
+   identical forecast origins in the final 20% test period. Both use 100 retained
+   sample paths, seed 42, temperature 1, top-p 0.9, top-k 0 and the same execution
+   rules. Nonoverlapping forecasts cover 24 candles. Gapped or incomplete windows
+   are excluded for both models and held as cash; coverage is reported explicitly.
+6. Save OHLC/close MAE, RMSE and MAPE, terminal directional accuracy, net return,
+   maximum drawdown, trade count, fees, slippage and trade logs. Default assumed
+   costs are 10 bps per side plus 5 bps slippage per fill, adjustable in the wizard.
+   Normalization during forecasting always uses historical context alone.
+7. Start **http://localhost:7071/** with real candles, trained/original forecast
+   paths, comparison metrics, and entry/stop/exit rules. The symbol and interval
+   are fixed to this experiment. Live refresh fetches only that same market and
+   does not modify training/test data. For a different interval, train a separate
+   experiment with the appropriate data.
+
+For the default experiment, checkpoints, manifests, logs and evaluation results
+are under `finetune_csv/finetuned/my_btc_small/`. The main files are
+`basemodel/best_model/`, `training_manifest.json`, `evaluation/report.json`,
+`evaluation/summary.csv`, and `evaluation/{original,finetuned}_backtest.json`.
+Percentages in JSON/CSV are fractions. Full test comparisons can take considerable
+time because every origin generates 100 futures for each model. The test split
+is untouched by this local training run; it is not guaranteed absent from the
+original model's pretraining history.
+
+Prepare everything without starting training:
+
+```bash
+./wizard.sh --non-interactive --prepare-only
+```
+
+Run all default stages without prompts:
+
+```bash
+./wizard.sh --non-interactive
+```
+
+Rerunning with the same choices reuses completed stages and cached test samples.
+An interrupted training stage restarts from its configured initial weights;
+optimizer/epoch state is not resumed. A changed dataset, configuration or saved
+checkpoint requires a new experiment name. Use a new `--name` with
+`--refresh-data` when downloading a newer snapshot. The original shared CSV can
+be updated without altering existing experiments' frozen copies.
+
+To train **both components from scratch**, choose `scratch` and a fresh
+experiment name. The wizard generates separate `*_scratch_tokenizer.yaml` and
+`*_scratch_predictor.yaml` files and runs them in that order. The first starts
+the tokenizer from random weights; the second freezes that trained tokenizer
+and starts the predictor from random weights. Local pretrained configs supply
+the architecture only. Three epochs remain the starting default, not a promise
+of matching a foundation model trained on a much larger corpus.
+
+Restart only a trained experiment's dashboard:
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m finetune_csv.dashboard \
+  --config finetune_csv/configs/my_btc_small.yaml --port 7071
+```
+
+`./stop-webui.sh` stops both dashboards and this checkout's running wizard,
+training and evaluation processes, including their worker processes.
+
 ### Download training candles from Binance or Bybit
 
 Use the installed environment automatically through this executable script:

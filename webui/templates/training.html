@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Kronos · Your trained model</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='market.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='training.css') }}">
+  <script defer src="{{ url_for('static', filename='vendor/lightweight-charts.standalone.production.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='training.js') }}"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">K</span><span>KRONOS <small>YOUR TRAINED MODEL</small></span></a>
+      <span class="local-badge"><i aria-hidden="true"></i> Local checkpoint comparison</span>
+    </header>
+    <main>
+      <div class="intro"><div><p class="eyebrow">FROM YOUR DATA TO YOUR FORECAST</p><h1>Your checkpoint. <span>A common benchmark.</span></h1><p class="intro-copy">Compare your trained model with the original Kronos-small using the same candles and sampling settings.</p></div><div class="model-tag"><span class="tiny-label">FROZEN EXPERIMENT</span><strong id="market-label">Loading experiment…</strong><span id="sampling-label">Historical context only</span></div></div>
+
+      <section class="panel experiment-panel" aria-labelledby="experiment-heading">
+        <div class="section-line"><h2 id="experiment-heading">Dataset & model</h2><span class="badge neutral" id="checkpoint-status">CHECKING CHECKPOINT</span></div>
+        <dl class="experiment-facts"><div><dt>Market</dt><dd id="dataset-market">—</dd></div><div><dt>Frozen data coverage</dt><dd id="dataset-coverage">—</dd></div><div><dt>Trained checkpoint</dt><dd id="checkpoint-path">—</dd></div></dl>
+        <p class="muted">The candle interval belongs to this experiment. Live refresh uses the same exchange, instrument and interval. It leaves the training and test snapshot unchanged.</p>
+        <div class="training-actions"><button type="button" id="forecast-snapshot" class="button secondary">Compare after dataset end</button><button type="button" id="forecast-live" class="button primary">Compare from live candles</button><button type="button" id="refresh-actuals" class="button subtle">Refresh actual candles</button><label class="check"><input type="checkbox" id="auto-refresh">Refresh actuals every 60s</label></div>
+      </section>
+
+      <div id="error" class="error-banner" role="alert" hidden></div>
+      <section id="job-panel" class="job-panel" aria-live="polite" hidden><div class="job-header"><span class="pulse" aria-hidden="true"></span><strong id="job-label">Preparing comparison</strong><span id="job-percentage"></span></div><progress id="job-progress" max="1" value="0" aria-label="Forecast progress"></progress><p id="job-message">Each checkpoint receives identical historical context.</p></section>
+
+      <section class="panel chart-panel" aria-labelledby="chart-heading">
+        <div class="chart-top"><div><p class="eyebrow">CANDLES & MATCHED FORECASTS</p><h2 id="chart-heading">Your market</h2></div><span class="muted" id="forecast-origin">Generate a comparison to see the next candles.</span></div>
+        <div class="chart-legend"><span><i class="legend-dot actual"></i>Actual candles</span><span><i class="legend-line trained-line"></i>Your checkpoint median</span><span><i class="legend-line original-line"></i>Original Kronos-small median</span><label class="paths-control" for="path-count">Paths per model <select id="path-count"><option value="0">Hidden</option><option value="10">Show 10</option><option value="100">Show all 100</option></select></label></div>
+        <div class="price-chart-wrap"><div id="price-chart" class="price-chart" role="img" aria-label="Real candles with trained and original model projections"></div></div>
+        <div class="chart-footer"><span id="chart-status">Loading frozen candles</span><span>UTC · <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">Charts by TradingView</a></span></div>
+        <p class="forecast-note" id="forecast-note">Forecasts stay fixed when actual candles refresh. Shaded sample paths and percentile bounds describe model outputs, not calibrated probabilities.</p>
+      </section>
+
+      <section class="panel evaluation-panel" aria-labelledby="evaluation-heading">
+        <div class="section-line"><div><p class="eyebrow">UNTOUCHED TEST PERIOD</p><h2 id="evaluation-heading">How does your checkpoint compare?</h2></div><button class="button subtle" type="button" id="refresh-report">Refresh evaluation</button></div>
+        <p class="muted" id="evaluation-coverage">Loading saved evaluation report…</p>
+        <div class="table-wrap"><table class="comparison-table"><caption>Identical dates, sampling settings and execution rules</caption><thead><tr><th scope="col">Metric</th><th scope="col">Your checkpoint</th><th scope="col">Original Kronos-small</th></tr></thead><tbody id="metric-rows"></tbody></table></div>
+        <p class="muted" id="execution-rules"></p><dl id="trade-rules" class="trade-rules"></dl><p class="risk-note" id="evaluation-notes">Metrics appear only after training and evaluation finish. The dashboard does not train models or modify test data.</p>
+      </section>
+
+      <footer class="page-footer"><p>Predictions are generated locally. Observe frozen forecasts against incoming candles before relying on a model. Past test performance does not establish future performance.</p><div class="chart-attribution"><a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts™</a><small>Copyright (с) 2025 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a></small></div></footer>
+    </main>
+  </div>
+</body>
+</html>

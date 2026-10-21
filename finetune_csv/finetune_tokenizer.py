@@ -15,10 +15,13 @@ from logging.handlers import RotatingFileHandler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-sys.path.append("../")
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 from model import KronosTokenizer
-from finetune_base_model import CustomKlineDataset
-from config_loader import CustomFinetuneConfig
+from finetune_csv.finetune_base_model import CustomKlineDataset
+from finetune_csv.config_loader import CustomFinetuneConfig
 
 
 def set_seed(seed: int, rank: int = 0):
@@ -103,7 +106,9 @@ def create_dataloaders(config):
         seed=config.seed,
         train_ratio=config.train_ratio,
         val_ratio=config.val_ratio,
-        test_ratio=config.test_ratio
+        test_ratio=config.test_ratio,
+        interval=getattr(config, "interval", None),
+        data_sha256=config.loader.get("data.sha256") if hasattr(config, "loader") else None
     )
     
     val_dataset = CustomKlineDataset(
@@ -115,7 +120,9 @@ def create_dataloaders(config):
         seed=config.seed + 1,
         train_ratio=config.train_ratio,
         val_ratio=config.val_ratio,
-        test_ratio=config.test_ratio
+        test_ratio=config.test_ratio,
+        interval=getattr(config, "interval", None),
+        data_sha256=config.loader.get("data.sha256") if hasattr(config, "loader") else None
     )
     
     use_ddp = dist.is_available() and dist.is_initialized()
@@ -128,7 +135,7 @@ def create_dataloaders(config):
         shuffle=(train_sampler is None),
         num_workers=config.num_workers,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
         sampler=train_sampler
     )
     
@@ -193,12 +200,10 @@ def train_tokenizer(model, device, config, save_dir, logger):
             ori_batch_x = ori_batch_x.to(device, non_blocking=True)
             
             current_batch_total_loss = 0.0
-            for j in range(accumulation_steps):
-                start_idx = j * (ori_batch_x.shape[0] // accumulation_steps)
-                end_idx = (j + 1) * (ori_batch_x.shape[0] // accumulation_steps)
-                batch_x = ori_batch_x[start_idx:end_idx]
+            optimizer.zero_grad(set_to_none=True)
+            for batch_x in torch.tensor_split(ori_batch_x, min(accumulation_steps, ori_batch_x.shape[0])):
                 
-                zs, bsq_loss, _, _ = (model.module if use_ddp else model)(batch_x)
+                zs, bsq_loss, _, _ = model(batch_x)
                 z_pre, z = zs
                 
                 recon_loss_pre = F.mse_loss(z_pre, batch_x)
@@ -206,8 +211,9 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 recon_loss = recon_loss_pre + recon_loss_all
                 loss = (recon_loss + bsq_loss) / 2
                 
-                loss_scaled = loss / accumulation_steps
-                current_batch_total_loss += loss.item()
+                weight = batch_x.shape[0] / ori_batch_x.shape[0]
+                loss_scaled = loss * weight
+                current_batch_total_loss += loss.item() * weight
                 loss_scaled.backward()
             
             torch.nn.utils.clip_grad_norm_((model.module if use_ddp else model).parameters(), max_norm=2.0)
@@ -216,7 +222,7 @@ def train_tokenizer(model, device, config, save_dir, logger):
             optimizer.zero_grad()
             
             if (batch_idx_global + 1) % config.log_interval == 0:
-                avg_loss = current_batch_total_loss / accumulation_steps
+                avg_loss = current_batch_total_loss
                 lr = optimizer.param_groups[0]["lr"]
                 log_msg = (f"[Epoch {epoch+1}/{config.tokenizer_epochs}, Step {batch_idx+1}/{len(train_loader)}] "
                           f"LR: {lr:.6f}, Loss: {avg_loss:.4f}")
@@ -240,7 +246,7 @@ def train_tokenizer(model, device, config, save_dir, logger):
         with torch.no_grad():
             for ori_batch_x, _ in val_loader:
                 ori_batch_x = ori_batch_x.to(device, non_blocking=True)
-                zs, _, _, _ = (model.module if use_ddp else model)(ori_batch_x)
+                zs, _, _, _ = model(ori_batch_x)
                 _, z = zs
                 val_loss_item = F.mse_loss(z, ori_batch_x)
                 
@@ -280,80 +286,16 @@ def train_tokenizer(model, device, config, save_dir, logger):
 
 def main():
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Kronos Tokenizer Fine-tuning Training')
-    parser.add_argument('--config', type=str, default='config.yaml', 
-                       help='Configuration file path (default: config.yaml)')
+    from finetune_csv.train_sequential import SequentialTrainer
+    parser = argparse.ArgumentParser(description='Train the Kronos tokenizer from CSV')
+    parser.add_argument('--config', required=True)
     args = parser.parse_args()
-    
-    config = CustomFinetuneConfig(args.config)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    
-    config = CustomFinetuneConfig(args.config)
-    
-    os.makedirs(config.tokenizer_save_path, exist_ok=True)
-    
-    log_dir = os.path.join(config.base_save_path, "logs")
-    logger = setup_logging(config.exp_name, log_dir, 0)
-    
-    set_seed(config.seed)
-    
-    # 加载预训练tokenizer
-    if getattr(config, 'pre_trained_tokenizer', True):
-        logger.info("Loading pretrained tokenizer...")
-        print("Loading pretrained tokenizer...")
-        tokenizer = KronosTokenizer.from_pretrained(config.pretrained_tokenizer_path)
-    else:
-        print("pre_trained_tokenizer=False, randomly initializing Tokenizer architecture")
-        import json, os
-        cfg_path = os.path.join(config.pretrained_tokenizer_path, 'config.json')
-        with open(cfg_path, 'r') as f:
-            arch = json.load(f)
-        tokenizer = KronosTokenizer(
-            d_in=arch.get('d_in', 6),
-            d_model=arch.get('d_model', 256),
-            n_heads=arch.get('n_heads', 4),
-            ff_dim=arch.get('ff_dim', 512),
-            n_enc_layers=arch.get('n_enc_layers', 4),
-            n_dec_layers=arch.get('n_dec_layers', 4),
-            ffn_dropout_p=arch.get('ffn_dropout_p', 0.0),
-            attn_dropout_p=arch.get('attn_dropout_p', 0.0),
-            resid_dropout_p=arch.get('resid_dropout_p', 0.0),
-            s1_bits=arch.get('s1_bits', 10),
-            s2_bits=arch.get('s2_bits', 10),
-            beta=arch.get('beta', 0.05),
-            gamma0=arch.get('gamma0', 1.0),
-            gamma=arch.get('gamma', 1.1),
-            zeta=arch.get('zeta', 0.05),
-            group_size=arch.get('group_size', 4)
-        )
-    tokenizer = tokenizer.to(device)
-    
-    model_size = get_model_size(tokenizer)
-    logger.info(f"Tokenizer parameters: {model_size}")
-    print(f"Tokenizer parameters: {model_size}")
-    
-    logger.info("=== Training Configuration ===")
-    logger.info(f"Data path: {config.data_path}")
-    logger.info(f"Lookback window: {config.lookback_window}")
-    logger.info(f"Predict window: {config.predict_window}")
-    logger.info(f"Batch size: {config.batch_size}")
-    logger.info(f"Learning rate: {config.tokenizer_learning_rate}")
-    logger.info(f"Training epochs: {config.tokenizer_epochs}")
-    logger.info(f"Device: {device}")
-    logger.info(f"Distributed training: False")
-    
-    logger.info("Starting tokenizer fine-tuning training...")
-    print("Starting tokenizer fine-tuning training...")
-    best_val_loss = train_tokenizer(tokenizer, device, config, config.tokenizer_save_path, logger)
-    
-    final_msg = f"Tokenizer training completed! Best validation loss: {best_val_loss:.4f}\nModel saved to: {config.tokenizer_save_path}"
-    logger.info(final_msg)
-    print(final_msg)
+    trainer = SequentialTrainer(args.config)
+    trainer.config.train_tokenizer = True
+    trainer.config.train_basemodel = False
+    if not trainer.run_training():
+        raise SystemExit(1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-    

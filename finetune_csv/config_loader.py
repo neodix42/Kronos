@@ -1,13 +1,35 @@
 import os
+from pathlib import Path
 import yaml
 from typing import Dict, Any
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def repository_path(value):
+    if value is None or value == "":
+        return value
+    path = Path(value).expanduser()
+    return str(path if path.is_absolute() else ROOT / path)
+
+
+def model_path(value):
+    """Keep Hub identifiers usable, while resolving local checkpoints from the repo."""
+    if not value:
+        return value
+    first = str(value).split("/", 1)[0]
+    if (str(value).count("/") == 1 and first not in
+            {"pretrained", "finetuned", "finetune_csv", "models", ".", ".."}
+            and not (ROOT / first).exists()):
+        return value
+    return repository_path(value)
 
 
 class ConfigLoader:
     
     def __init__(self, config_path: str):
 
-        self.config_path = config_path
+        self.config_path = repository_path(config_path)
         self.config = self._load_config()
     
     def _load_config(self) -> Dict[str, Any]:
@@ -18,17 +40,27 @@ class ConfigLoader:
         with open(self.config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
+        if not isinstance(config, dict):
+            raise ValueError("Training configuration must be a YAML mapping")
         config = self._resolve_dynamic_paths(config)
+        if config.get("data", {}).get("data_path"):
+            config["data"]["data_path"] = repository_path(config["data"]["data_path"])
+        paths = config.get("model_paths", {})
+        for key in ("pretrained_tokenizer", "pretrained_predictor", "finetuned_tokenizer"):
+            if paths.get(key):
+                paths[key] = model_path(paths[key])
+        for key in ("base_path", "base_save_path"):
+            if paths.get(key):
+                paths[key] = repository_path(paths[key])
         
         return config
     
     def _resolve_dynamic_paths(self, config: Dict[str, Any]) -> Dict[str, Any]:
 
         exp_name = config.get('model_paths', {}).get('exp_name', '')
-        if not exp_name:
-            return config
+        exp_name = exp_name or "default_experiment"
         
-        base_path = config.get('model_paths', {}).get('base_path', '')
+        base_path = config.get('model_paths', {}).get('base_path', 'finetune_csv/finetuned')
         path_templates = {
             'base_save_path': f"{base_path}/{exp_name}",
             'finetuned_tokenizer': f"{base_path}/{exp_name}/tokenizer/best_model"
@@ -36,9 +68,9 @@ class ConfigLoader:
         
         if 'model_paths' in config:
             for key, template in path_templates.items():
-                if key in config['model_paths']:
+                if key in config['model_paths'] or key == 'base_save_path':
                     # only use template when the original value is empty string
-                    current_value = config['model_paths'][key]
+                    current_value = config['model_paths'].get(key)
                     if current_value == "" or current_value is None:
                         config['model_paths'][key] = template
                     else:
@@ -120,6 +152,7 @@ class CustomFinetuneConfig:
 
         data_config = self.loader.get_data_config()
         self.data_path = data_config.get('data_path')
+        self.interval = data_config.get('interval', data_config.get('period'))
         self.lookback_window = data_config.get('lookback_window', 512)
         self.predict_window = data_config.get('predict_window', 48)
         self.max_context = data_config.get('max_context', 512)
@@ -170,6 +203,13 @@ class CustomFinetuneConfig:
         unified_pretrained = experiment_config.get('pre_trained', None)
         self.pre_trained_tokenizer = experiment_config.get('pre_trained_tokenizer', unified_pretrained if unified_pretrained is not None else True)
         self.pre_trained_predictor = experiment_config.get('pre_trained_predictor', unified_pretrained if unified_pretrained is not None else True)
+        self.from_scratch = bool(self.loader.get('model.from_scratch', False))
+        if self.from_scratch:
+            self.pre_trained_tokenizer = False
+            self.pre_trained_predictor = False
+        if not self.finetuned_tokenizer_path:
+            self.finetuned_tokenizer_path = (os.path.join(self.base_save_path, self.tokenizer_save_name, 'best_model')
+                                             if self.train_tokenizer else self.pretrained_tokenizer_path)
         
         device_config = self.loader.get_device_config()
         self.use_cuda = device_config.get('use_cuda', True)
@@ -180,6 +220,21 @@ class CustomFinetuneConfig:
         self.ddp_backend = distributed_config.get('backend', 'nccl')
         
         self._compute_full_paths()
+        self._validate()
+
+    def _validate(self):
+        if self.lookback_window < 1 or self.predict_window < 1:
+            raise ValueError("lookback_window and predict_window must be positive")
+        if self.max_context < self.lookback_window:
+            raise ValueError("max_context must be at least lookback_window")
+        if self.batch_size < 1 or self.num_workers < 0:
+            raise ValueError("batch_size must be positive and num_workers nonnegative")
+        if self.log_interval < 1 or self.accumulation_steps < 1:
+            raise ValueError("log_interval and accumulation_steps must be positive")
+        if self.train_basemodel and self.basemodel_epochs < 1:
+            raise ValueError("basemodel_epochs must be positive")
+        if self.train_tokenizer and self.tokenizer_epochs < 1:
+            raise ValueError("tokenizer_epochs must be positive")
     
     def _compute_full_paths(self):
 
