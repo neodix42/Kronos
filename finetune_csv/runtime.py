@@ -150,7 +150,7 @@ def resolve_setup(*, config=None, name=None, port=None):
                 except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
                     continue
             if chosen is None:
-                chosen = _candidate(ROOT / "finetune_csv/configs/my_btc_small.yaml")
+                chosen = _legacy_for_config(ROOT / "finetune_csv/configs/my_btc_small.yaml")
     if port is not None:
         chosen["port"] = port
     return chosen
@@ -176,7 +176,7 @@ def require_ready(descriptor):
                 "original local predictor": paths.get("pretrained_predictor"),
                 "original local tokenizer": paths.get("pretrained_tokenizer")}
     for label, value in required.items():
-        folder = local_path(value) if value else None
+        folder = local_path(str(value).format(exp_name=info["name"])) if value else None
         if folder is None or not (folder / "config.json").is_file() or not any(
                 (folder / filename).is_file() for filename in ("model.safetensors", "pytorch_model.bin")):
             raise ValueError(f"Missing {label} checkpoint. Run ./wizard.sh to finish preparing and training this setup.")
@@ -255,11 +255,11 @@ def _matches_dashboard(proc, descriptor, *, any_port=False, stopping=False):
                 return False
             if state.get("config_sha256") != descriptor["config_sha256"]:
                 return False
-            if stopping:
+            if stopping or any_port:
                 # The running process loaded the recorded startup bytes. Its
                 # former editable filename may now contain another experiment.
                 return True
-        elif path != local_path(descriptor["config"]):
+        elif path != local_path(descriptor["config"]) and not any_port:
             return False
         info = config_info(path)
         return (info["sha256"] == descriptor["config_sha256"] and info["name"] == descriptor["experiment_name"]
@@ -295,8 +295,10 @@ def start_setup(*, config=None, name=None, port=None):
 def _matches_pipeline(proc, descriptor):
     if proc.cwd != ROOT.resolve() or proc.module not in PIPELINE_MODULES:
         return False
-    if proc.module == "finetune_csv.wizard" and proc.argument("--name") == descriptor["experiment_name"]:
-        return True
+    if proc.module == "finetune_csv.wizard":
+        # Interactive answers can override every CLI default. Infer this parent
+        # only from its verified trainer/evaluator child, never from --name.
+        return False
     path = _process_config(proc)
     if path is None:
         return False

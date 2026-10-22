@@ -328,8 +328,9 @@ startup descriptor. `outputs/wizard/last-setup.json` remembers the latest
 selection. This keeps an earlier setup bound to its own model and data even
 after the wizard writes a new experiment's editable YAML. The launch scripts
 also recognize existing setups created before these descriptors were added.
-`stop-wizard.sh` targets the selected wizard setup; the original dashboard on
-7070 remains separate.
+`stop-wizard.sh` targets the selected wizard setup; use `./stop-wizard.sh --all`
+to stop every wizard setup in this checkout. The original dashboard on 7070
+remains separate.
 
 `./stop-webui.sh` stops both dashboards and this checkout's running wizard,
 training and evaluation processes, including their worker processes.
@@ -345,9 +346,10 @@ backtest trades are separate from paper fills.
 The runner evaluates each newly closed candle while flat, using the trained
 model's 100 sampled futures and the existing rules: long only, at least 70%
 bullish agreement, and net reward/risk of at least 1.5 after costs. It holds one
-position at a time, risks an estimated 1% at the stop, and caps allocation at
-25% of equity. Fees and adverse slippage come from the experiment's evaluation
-settings (defaults: 10 and 5 basis points per side).
+position at a time. By default, it risks an estimated 1% at the stop and caps
+allocation at 25% of equity; choose these percentages in the wizard. Fees and
+adverse slippage come from the experiment's evaluation settings (defaults:
+10 and 5 basis points per side).
 
 Entries use a fresh public price observed **after** the forecast completes.
 Frozen stop/target levels and net reward/risk are checked again at that price.

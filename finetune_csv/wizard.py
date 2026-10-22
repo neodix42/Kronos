@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -362,7 +363,8 @@ def start_dashboard(config_path, port):
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=2) as response:
                 if response.status == 200:
                     print(f"Trained-model dashboard: http://localhost:{port}/", flush=True)
-                    print(f"Dashboard log: {log_path}\nStop all local Kronos dashboards: ./stop-webui.sh")
+                    print(f"Dashboard log: {log_path}\nStop this setup: ./stop-wizard.sh "
+                          f"--config {shlex.quote(str(config_path))} --port {port}")
                     return
         except (OSError, TimeoutError):
             time.sleep(0.2)
