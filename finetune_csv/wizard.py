@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -67,6 +68,13 @@ def positive_int(value):
     return number
 
 
+def percentage(value):
+    number = float(value)
+    if not math.isfinite(number) or not 0 < number <= 100:
+        raise ValueError("Risk and position percentages must be finite, greater than 0 and at most 100.")
+    return number
+
+
 def prepare_models():
     """Copy pinned snapshots, retaining provenance and checking existing copies."""
     from huggingface_hub import snapshot_download
@@ -109,7 +117,9 @@ def prepare_models():
 
 def make_config(*, exchange="bybit", category="spot", symbol="BTCUSDT", interval="1h",
                 start_date="2021-01-01", exp_name="my_btc_small", mode="finetune",
-                epochs=3, batch_size=2, sample_count=100, fee_bps=10, slippage_bps=5):
+                epochs=3, batch_size=2, sample_count=100, fee_bps=10, slippage_bps=5,
+                risk_fraction=.01, max_position_fraction=.25):
+    """Build an experiment; risk and position arguments are fractions in (0, 1]."""
     if exchange not in ("binance", "bybit") or category not in ("spot", "linear", "inverse"):
         raise ValueError("Unsupported exchange or market category.")
     if exchange == "binance" and category != "spot":
@@ -132,6 +142,9 @@ def make_config(*, exchange="bybit", category="spot", symbol="BTCUSDT", interval
         raise ValueError("Forecast paths must be between 1 and 500.")
     if not 0 <= fee_bps <= 100 or not 0 <= slippage_bps <= 100:
         raise ValueError("Fees and slippage must each be between 0 and 100 bps per side.")
+    for value in (risk_fraction, max_position_fraction):
+        if isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError("Risk and maximum position fractions must be finite, greater than 0 and at most 1.")
     base = f"finetune_csv/finetuned/{exp_name}"
     scratch = mode == "scratch"
     return {
@@ -158,8 +171,8 @@ def make_config(*, exchange="bybit", category="spot", symbol="BTCUSDT", interval
                            sample_count=int(sample_count), batch_size=8, seed=42, temperature=1.0,
                            top_k=0, top_p=0.9, stride=24, fee_bps=float(fee_bps),
                            slippage_bps=float(slippage_bps), initial_equity=10000,
-                           consensus_threshold=0.70, risk_fraction=0.01,
-                           max_position_fraction=0.25, minimum_reward_risk=1.5),
+                           consensus_threshold=0.70, risk_fraction=float(risk_fraction),
+                           max_position_fraction=float(max_position_fraction), minimum_reward_risk=1.5),
     }
 
 
@@ -222,6 +235,44 @@ def save_configs(config, path):
     return files, fingerprint
 
 
+def freeze_config_bytes(frozen_path, contents):
+    frozen_path = Path(frozen_path)
+    if frozen_path.exists() and frozen_path.read_bytes() != contents:
+        raise ValueError("This experiment already has a different prepared configuration. "
+                         "Choose a new --name and --config to preserve its dashboard and paper ledger.")
+    if not frozen_path.exists():
+        frozen_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=frozen_path.parent, prefix=".config-", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(contents)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            temporary_path.replace(frozen_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+    return frozen_path
+
+
+def write_setup_manifest(config_path, port, config):
+    """Remember a fully prepared setup for the dashboard lifecycle scripts."""
+    config_path = Path(config_path).resolve()
+    run_dir = (ROOT / config["model_paths"]["base_save_path"]).resolve()
+    contents = config_path.read_bytes()
+    if yaml.safe_load(contents) != config:
+        raise ValueError("The editable configuration changed during preparation. Rerun with a separate --config path.")
+    frozen_path = freeze_config_bytes(run_dir / "setup/config.yaml", contents)
+    descriptor = {"version": 1, "root": str(ROOT), "config": str(frozen_path),
+                  "source_config": str(config_path), "config_sha256": sha256(frozen_path), "port": int(port),
+                  "experiment_name": config["model_paths"]["exp_name"],
+                  "base_save_path": str(run_dir), "prepared": True}
+    write_json(run_dir / "wizard-setup.json", descriptor)
+    write_json(ROOT / "outputs/wizard/last-setup.json", descriptor)
+    return descriptor
+
+
 def run_logged(command, log_path):
     """Forward cancellation to the process group, including DataLoader workers."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -267,10 +318,19 @@ def dashboard_already_running(config_path, port):
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         proc = Path("/proc") / str(state.get("pid", "missing"))
         try:
-            identity = (proc / "stat").read_text().rsplit(")", 1)[1].split()[19]
-            matches = (state.get("start_time") == identity and state.get("config") == str(config_path.resolve())
-                       and state.get("config_sha256") == sha256(config_path))
-        except FileNotFoundError:
+            fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+            args = [os.fsdecode(item) for item in (proc / "cmdline").read_bytes().split(b"\0") if item]
+            running_config = Path(state["config"]).resolve()
+            config_hash = sha256(config_path)
+            matches = (fields[0] not in ("Z", "X") and state.get("start_time") == fields[19]
+                       and proc.stat().st_uid == os.getuid() and (proc / "cwd").resolve() == ROOT.resolve()
+                       and (proc / "exe").resolve().name.startswith("python")
+                       and args[1:3] == ["-m", "finetune_csv.dashboard"]
+                       and Path(args[args.index("--config") + 1]).resolve() == running_config
+                       and int(args[args.index("--port") + 1]) == port
+                       and state.get("config_sha256") == config_hash
+                       and sha256(running_config) == config_hash)
+        except (OSError, ValueError, KeyError, IndexError):
             matches = False
         if matches:
             return True
@@ -328,6 +388,10 @@ def main(argv=None):
     parser.add_argument("--sample-count", type=positive_int, default=100)
     parser.add_argument("--fee-bps", type=float, default=10)
     parser.add_argument("--slippage-bps", type=float, default=5)
+    parser.add_argument("--risk-percent", type=float, default=1,
+                        help="Estimated stop-loss budget per trade as a percentage of account equity (default: 1)")
+    parser.add_argument("--max-position-percent", type=float, default=25,
+                        help="Maximum position allocation as a percentage of account equity (default: 25)")
     parser.add_argument("--port", type=int, default=7071)
     args = parser.parse_args(argv)
     if not args.non_interactive and not sys.stdin.isatty():
@@ -349,16 +413,33 @@ def main(argv=None):
         sample_count = positive_int(ask("Forecast paths per test origin, per model", args.sample_count, **options))
         fee_bps = float(ask("Fee per side, basis points", args.fee_bps, **options))
         slippage_bps = float(ask("Slippage per fill, basis points", args.slippage_bps, **options))
+        risk_percent = percentage(ask("Estimated stop-loss budget per trade (%)", args.risk_percent, **options))
+        max_position_percent = percentage(ask("Maximum position allocation (%)", args.max_position_percent, **options))
         port = positive_int(ask("Dashboard port", args.port, **options))
         if not 1024 <= port <= 65535:
             raise ValueError("Choose a dashboard port between 1024 and 65535.")
         config = make_config(exchange=exchange, category=category, symbol=symbol, interval=interval,
                              start_date=start_date, exp_name=name, mode=mode, epochs=epochs, batch_size=batch_size,
-                             sample_count=sample_count, fee_bps=fee_bps, slippage_bps=slippage_bps)
+                             sample_count=sample_count, fee_bps=fee_bps, slippage_bps=slippage_bps,
+                             risk_fraction=risk_percent / 100,
+                             max_position_fraction=max_position_percent / 100)
         source_path = ROOT / config["data"]["data_path"]
         run_dir = ROOT / config["model_paths"]["base_save_path"]
         state_path = run_dir / "wizard-state.json"
         csv_path = run_dir / "dataset/candles.csv"
+        if state_path.exists():
+            tracked = json.loads(state_path.read_text())
+            frozen_config_path = run_dir / "setup/config.yaml"
+            tracked_config_path = (frozen_config_path if frozen_config_path.exists() else
+                                   Path(tracked.get("config", str(args.config.resolve()))))
+            if not tracked_config_path.is_absolute():
+                tracked_config_path = ROOT / tracked_config_path
+            if tracked_config_path.is_file():
+                tracked_evaluation = yaml.safe_load(tracked_config_path.read_text()).get("evaluation", {})
+                if any(tracked_evaluation.get(key, default) != config["evaluation"][key]
+                       for key, default in (("risk_fraction", .01), ("max_position_fraction", .25))):
+                    raise ValueError("This tracked experiment has different stop-loss or allocation settings. "
+                                     "Choose a new --name and --config to preserve its checkpoint, evaluation and paper ledger.")
         if args.refresh_data and (state_path.exists() or csv_path.exists()):
             raise ValueError("This experiment already has a frozen dataset. Use a new --name with --refresh-data.")
         if not csv_path.exists() and (not source_path.exists() or args.refresh_data):
@@ -407,16 +488,23 @@ def main(argv=None):
                 raise ValueError(f"The completed {stage} checkpoint changed. Choose a new experiment name.")
         save_configs(config, args.config.resolve())
         if not args.prepare_only and not args.no_dashboard:
-            dashboard_already_running(args.config.resolve(), port)
+            frozen_config = run_dir / "setup/config.yaml"
+            dashboard_already_running(frozen_config if frozen_config.exists() else args.config.resolve(), port)
         write_json(run_dir / "dataset-manifest.json", manifest)
         write_json(state_path, state)
         for split, values in manifest["partitions"].items():
             print(f"{split}: {values['rows']:,} rows, {values['first_timestamp']} → {values['last_timestamp']}", flush=True)
         prepare_models()
+        setup = write_setup_manifest(args.config.resolve(), port, config)
         if args.prepare_only:
             print("Preparation complete. Run ./wizard.sh again with the same choices to train, evaluate and launch the dashboard.")
             return 0
-        stages = files[1:] if mode == "scratch" else files
+        if mode == "scratch":
+            stages = [(freeze_config_bytes(run_dir / "setup" / path.name,
+                                           yaml.safe_dump(contents, sort_keys=False).encode("utf-8")), contents)
+                      for path, contents in files[1:]]
+        else:
+            stages = [(Path(setup["config"]), config)]
         for index, (path, _) in enumerate(stages):
             stage = "tokenizer" if mode == "scratch" and index == 0 else "predictor"
             checkpoint = run_dir / ("tokenizer" if stage == "tokenizer" else "basemodel") / "best_model"
@@ -432,13 +520,13 @@ def main(argv=None):
             write_json(state_path, state)
         report = run_dir / "evaluation/report.json"
         if "evaluation" not in state["completed_stages"] or not report.exists():
-            run_logged([sys.executable, "-m", "finetune_csv.evaluate", "--config", str(args.config.resolve())],
+            run_logged([sys.executable, "-m", "finetune_csv.evaluate", "--config", setup["config"]],
                        run_dir / "logs/wizard-evaluation.log")
             state["completed_stages"].append("evaluation")
             write_json(state_path, state)
         print(f"Matched held-out test comparison: {report}", flush=True)
         if not args.no_dashboard:
-            start_dashboard(args.config.resolve(), port)
+            start_dashboard(Path(setup["config"]), port)
         return 0
     except KeyboardInterrupt:
         print("\nWizard stopped. Completed stages and cached test forecasts are preserved; rerun to continue.", file=sys.stderr)

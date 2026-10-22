@@ -195,9 +195,24 @@ the repository root):
 
 The wizard asks for exchange, market category, symbol, candle interval, start
 date, experiment name, training mode, epochs, batch size, forecast sample count,
-cost assumptions and dashboard port. Press Enter to use each displayed default.
+cost assumptions, estimated stop-loss budget, maximum allocation and dashboard
+port. Press Enter to use each displayed default.
 Defaults select Bybit spot BTCUSDT, hourly candles from 2021-01-01, predictor-only
 fine-tuning, three epochs and port **7071**. The existing dashboard stays on 7070.
+
+Enter risk and allocation as percentages: **1** means a 1% estimated stop-loss
+budget, and **25** means a 25% maximum allocation. These are saved as
+`evaluation.risk_fraction: 0.01` and `evaluation.max_position_fraction: 0.25`.
+For example, to select a 0.5% budget and a 20% allocation cap for a new setup:
+
+```bash
+./wizard.sh --risk-percent 0.5 --max-position-percent 20
+```
+
+These settings apply to backtesting and paper sizing. Existing setups retain
+their saved rules; choose a new experiment name when selecting different risk
+settings. The wizard rejects a changed budget for an existing tracked run
+before changing its config or paper account.
 
 The wizard then performs these steps automatically:
 
@@ -285,12 +300,36 @@ and starts the predictor from random weights. Local pretrained configs supply
 the architecture only. Three epochs remain the starting default, not a promise
 of matching a foundation model trained on a much larger corpus.
 
-Restart only a trained experiment's dashboard:
+Start or stop the most recently prepared setup:
 
 ```bash
-OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m finetune_csv.dashboard \
-  --config finetune_csv/configs/my_btc_small.yaml --port 7071
+./start-wizard.sh
+./stop-wizard.sh
 ```
+
+Starting uses the saved checkpoint and paper account. A prepared setup must
+finish predictor training before it can start. Repeated starts reuse a matching
+running instance; repeated stops are safe. Stopping preserves the dataset,
+models, evaluation reports, virtual balance, positions and paper enabled flag.
+Paper monitoring resumes when the setup starts again. Open virtual positions
+are saved rather than closed by the stop script.
+
+Select a particular experiment or configuration when needed:
+
+```bash
+./start-wizard.sh --name mybtcsmall-1
+./stop-wizard.sh --name mybtcsmall-1
+./start-wizard.sh --config finetune_csv/configs/my_btc_small.yaml --port 7071
+```
+
+Each setup has an unchanged configuration copy at
+`finetune_csv/finetuned/<name>/setup/config.yaml` and a `wizard-setup.json`
+startup descriptor. `outputs/wizard/last-setup.json` remembers the latest
+selection. This keeps an earlier setup bound to its own model and data even
+after the wizard writes a new experiment's editable YAML. The launch scripts
+also recognize existing setups created before these descriptors were added.
+`stop-wizard.sh` targets the selected wizard setup; the original dashboard on
+7070 remains separate.
 
 `./stop-webui.sh` stops both dashboards and this checkout's running wizard,
 training and evaluation processes, including their worker processes.
