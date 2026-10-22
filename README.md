@@ -295,6 +295,52 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m finetune_csv.dashboard \
 `./stop-webui.sh` stops both dashboards and this checkout's running wizard,
 training and evaluation processes, including their worker processes.
 
+### Automatic paper trading on the trained-model dashboard
+
+The dashboard on **http://localhost:7071/** includes a persistent virtual account
+for the experiment's **fine-tuned model**. Start it with **Start automatic paper
+trading**. The server keeps running the strategy when the browser is closed.
+New accounts begin with **10,000 virtual USDT** and no historical positions;
+backtest trades are separate from paper fills.
+
+The runner evaluates each newly closed candle while flat, using the trained
+model's 100 sampled futures and the existing rules: long only, at least 70%
+bullish agreement, and net reward/risk of at least 1.5 after costs. It holds one
+position at a time, risks an estimated 1% at the stop, and caps allocation at
+25% of equity. Fees and adverse slippage come from the experiment's evaluation
+settings (defaults: 10 and 5 basis points per side).
+
+Entries use a fresh public price observed **after** the forecast completes.
+Frozen stop/target levels and net reward/risk are checked again at that price.
+The runner polls public prices every 15 seconds to manage stops, targets and
+the 24-candle expiry. Stops that have been crossed fill at the observed price
+with adverse slippage; target fills are conservatively capped at the target.
+Polling can miss movements between observations. These are simulated fills,
+not exchange executions or a guarantee of the price an actual order would get.
+
+The panel shows cash, equity, realized/unrealized P&L, the open position,
+costs, saved trades, and the latest BUY/WAIT reason. Paper entry/exit markers
+and open stop/target levels appear on the chart when in its visible range.
+**Pause new entries** keeps existing positions under management; **Close virtual
+position** exits using a fresh observed public price. No account credentials
+or exchange order endpoints are used.
+
+Account state and enabled status persist under the experiment's `paper/`
+directory. Restarting the dashboard resumes an enabled account. A single-writer
+lock prevents two processes trading the same paper account, and model/market/
+rule checks prevent accidentally reusing it with a different experiment.
+
+The computer and server must remain running for continuous observation.
+`./stop-webui.sh` also stops paper monitoring. On restart, completed candles
+fully after the last observation may reconstruct exits; ambiguous partial
+candles and missing history are reported, and historical entries are never
+invented. New entries always require a fresh forecast and quote.
+
+Paper results use a different observation schedule from the saved historical
+backtest: live paper checks each new candle and fills at a later observed quote,
+whereas the test comparison uses nonoverlapping 24-candle windows and simulated
+next-open fills. Both retain the same signal thresholds, costs and sizing rules.
+
 ### Download training candles from Binance or Bybit
 
 Use the installed environment automatically through this executable script:

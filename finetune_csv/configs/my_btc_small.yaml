@@ -1,5 +1,5 @@
 data:
-  data_path: finetune_csv/finetuned/my_btc_small/dataset/candles.csv
+  data_path: finetune_csv/finetuned/mybtcsmall-1/dataset/candles.csv
   interval: 1h
   lookback_window: 488
   predict_window: 24
@@ -25,16 +25,16 @@ training:
 model_paths:
   pretrained_predictor: pretrained/Kronos-small
   pretrained_tokenizer: pretrained/Kronos-Tokenizer-base
-  exp_name: my_btc_small
+  exp_name: mybtcsmall-1
   base_path: finetune_csv/finetuned
-  base_save_path: finetune_csv/finetuned/my_btc_small
+  base_save_path: finetune_csv/finetuned/mybtcsmall-1
   finetuned_tokenizer: pretrained/Kronos-Tokenizer-base
   tokenizer_save_name: tokenizer
   basemodel_save_name: basemodel
 model:
   from_scratch: false
 experiment:
-  name: my_btc_small
+  name: mybtcsmall-1
   description: BTCUSDT 1h finetune; chronological held-out test
   use_comet: false
   train_tokenizer: false
@@ -48,7 +48,7 @@ experiment:
   interval: 1h
   start_date: '2021-01-01'
   mode: finetune
-  dataset_manifest: finetune_csv/finetuned/my_btc_small/dataset-manifest.json
+  dataset_manifest: finetune_csv/finetuned/mybtcsmall-1/dataset-manifest.json
   source_data_path: data/bybit_spot_BTCUSDT_1h_2021-01-01.csv
 device:
   use_cuda: true

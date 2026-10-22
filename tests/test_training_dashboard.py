@@ -218,6 +218,78 @@ def test_cross_origin_forecast_is_rejected(api):
     client, service = api
     response = client.post("/api/forecast", json={}, headers={"Origin": "https://example.com"})
     assert response.status_code == 403
+
+
+class FakePaperTrader:
+    def __init__(self, service):
+        self.service = service
+        self.enabled = False
+        self.calls = []
+
+    def status(self):
+        return dict(enabled=self.enabled, cash=10000., equity=10000., model="finetuned",
+                    market=self.service.market, position=None, trades=[])
+
+    def enable(self):
+        self.calls.append("start")
+        self.enabled = True
+
+    def pause(self):
+        self.calls.append("pause")
+        self.enabled = False
+
+    def close_position(self):
+        self.calls.append("close")
+
+    def close(self):
+        self.calls.append("shutdown")
+
+
+def test_paper_account_controls_use_trained_experiment_and_leave_data_untouched(api):
+    client, service = api
+    service.paper_factory = FakePaperTrader
+    before = service.data_path.read_bytes()
+    assert service.paper_trader is None
+    account = client.get("/api/paper/status").get_json()
+    assert account["cash"] == 10000. and account["enabled"] is False
+    assert account["model"] == "finetuned" and account["market"] == service.market
+    assert client.post("/api/paper/start", json={}).get_json()["enabled"] is True
+    assert client.post("/api/paper/pause", json={}).get_json()["enabled"] is False
+    assert client.post("/api/paper/close", json={}).status_code == 200
+    assert service.paper_trader.calls == ["start", "pause", "close"]
+    assert service.data_path.read_bytes() == before
+    assert not service.report_path.exists() and service.engines == {}
+
+
+@pytest.mark.parametrize("action,body", [("start", None), ("start", []), ("start", {"fee_bps": 0}),
+                                        ("pause", {"enabled": False}), ("close", {"price": 1})])
+def test_paper_controls_reject_price_and_rule_overrides_before_creating_account(api, action, body):
+    client, service = api
+    service.paper_factory = FakePaperTrader
+    assert client.post("/api/paper/" + action, json=body).status_code == 400
+    assert service.paper_trader is None
+
+
+def test_paper_mutations_require_same_origin_and_unknown_actions_are_rejected(api):
+    client, service = api
+    service.paper_factory = FakePaperTrader
+    assert client.post("/api/paper/start", json={}, headers={"Origin": "https://example.com"}).status_code == 403
+    assert client.post("/api/paper/reset", json={}).status_code == 404
+    assert service.paper_trader is None
+
+
+def test_paper_close_errors_are_visible_and_do_not_change_enabled_state(api):
+    client, service = api
+    service.paper_factory = FakePaperTrader
+
+    def cannot_close():
+        raise RuntimeError("No fresh public quote is available")
+
+    service.paper().close_position = cannot_close
+    response = client.post("/api/paper/close", json={})
+    assert response.status_code == 409
+    assert "fresh public quote" in response.get_json()["error"]
+    assert service.paper_trader.enabled is False
     assert service.jobs == {}
 
 

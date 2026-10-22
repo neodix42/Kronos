@@ -63,7 +63,7 @@ def validated_frame(frame):
 
 
 class TrainingDashboard:
-    def __init__(self, config_path, *, engine_factory=None, live_fetcher=None):
+    def __init__(self, config_path, *, engine_factory=None, live_fetcher=None, paper_factory=None):
         self.config_path = local_path(config_path).resolve()
         self.config = CustomFinetuneConfig(str(self.config_path))
         self.settings = self.config.loader.config
@@ -87,9 +87,12 @@ class TrainingDashboard:
         self.engine_versions = {}
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kronos-trained-dashboard")
         self.lock = threading.RLock()
+        self.forecast_lock = threading.RLock()
         self.jobs = {}
         self.latest_forecast = None
         self.hash_cache = {}
+        self.paper_factory = paper_factory
+        self.paper_trader = None
 
     def snapshot(self):
         return validated_frame(load_candles(self.config))
@@ -102,7 +105,18 @@ class TrainingDashboard:
                     report_available=self.report_path.is_file(), report_path=str(self.report_path),
                     lookback=self.config.lookback_window, horizon=self.config.predict_window,
                     max_context=self.config.max_context, sample_count=self.sampling()["sample_count"],
-                    fixed_timeframe=True, live_refresh_changes_training_data=False)
+                    fixed_timeframe=True, live_refresh_changes_training_data=False,
+                    paper_trading_supported=True)
+
+    def paper(self):
+        with self.lock:
+            if self.paper_trader is None:
+                factory = self.paper_factory
+                if factory is None:
+                    from finetune_csv.paper_trading import PaperTrader
+                    factory = PaperTrader
+                self.paper_trader = factory(self)
+            return self.paper_trader
 
     def sampling(self):
         nested = self.evaluation.get("sampling", {})
@@ -196,8 +210,9 @@ class TrainingDashboard:
             for index, kind in enumerate(("finetuned", "original")):
                 progress(.03 + index * .47, f"Sampling {kind} checkpoint")
                 sample_args = {key: value for key, value in self.sampling().items() if key != "batch_size"}
-                samples = self.engine(kind).sample(history, timestamps, **sample_args,
-                    progress=lambda fraction, index=index, kind=kind: progress(.03 + .47 * (index + fraction), f"Sampling {kind} checkpoint"))
+                with self.forecast_lock:
+                    samples = self.engine(kind).sample(history, timestamps, **sample_args,
+                        progress=lambda fraction, index=index, kind=kind: progress(.03 + .47 * (index + fraction), f"Sampling {kind} checkpoint"))
                 samples = np.asarray(samples, dtype=float)
                 if samples.shape != (self.sampling()["sample_count"], len(timestamps), 6) or not np.isfinite(samples).all() or (samples[:, :, :4] <= 0).any():
                     raise ValueError(f"The {kind} checkpoint generated invalid forecast values.")
@@ -272,13 +287,16 @@ class TrainingDashboard:
         return digest.hexdigest()
 
     def close(self):
+        if self.paper_trader is not None:
+            self.paper_trader.close()
         self.executor.shutdown(wait=True)
         for engine in self.engines.values():
             engine.close()
 
 
-def create_app(config_path, *, engine_factory=None, live_fetcher=None):
-    service = TrainingDashboard(config_path, engine_factory=engine_factory, live_fetcher=live_fetcher)
+def create_app(config_path, *, engine_factory=None, live_fetcher=None, paper_factory=None, start_paper=False):
+    service = TrainingDashboard(config_path, engine_factory=engine_factory, live_fetcher=live_fetcher,
+                                paper_factory=paper_factory)
     app = Flask(__name__, template_folder=str(ROOT / "webui" / "templates"),
                 static_folder=str(ROOT / "webui" / "static"))
     app.extensions["training_dashboard"] = service
@@ -344,6 +362,41 @@ def create_app(config_path, *, engine_factory=None, live_fetcher=None):
         with service.lock:
             return jsonify(forecast=service.latest_forecast)
 
+    @app.get("/api/paper/status")
+    def paper_status():
+        try:
+            return jsonify(service.paper().status())
+        except RuntimeError as exc:
+            return jsonify(error=str(exc)), 409
+
+    @app.post("/api/paper/<action>")
+    def paper_action(action):
+        origin = request.headers.get("Origin")
+        if origin and urlsplit(origin).netloc != request.host:
+            return jsonify(error="Paper-trading controls must come from this local dashboard."), 403
+        if action not in ("start", "pause", "close"):
+            return jsonify(error="Unknown paper-trading action."), 404
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or body:
+            raise ValueError("Send an empty JSON object; this account uses the experiment's frozen rules.")
+        try:
+            trader = service.paper()
+            if action == "start":
+                trader.enable()
+            elif action == "pause":
+                trader.pause()
+            else:
+                trader.close_position()
+            return jsonify(trader.status())
+        except RuntimeError as exc:
+            return jsonify(error=str(exc)), 409
+
+    if start_paper:
+        try:
+            service.paper().start()
+        except (ValueError, OSError, RuntimeError) as exc:
+            app.logger.error("Paper monitoring could not start: %s", exc)
+
     return app
 
 
@@ -354,7 +407,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535.")
-    app = create_app(args.config)
+    app = create_app(args.config, start_paper=True)
     try:
         app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True, use_reloader=False)
     finally:
