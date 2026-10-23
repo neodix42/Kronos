@@ -25,6 +25,7 @@ from finetune_csv.config_loader import CustomFinetuneConfig
 from finetune_csv.data_utils import load_candles
 from market.binance import BinanceClient, future_timestamps, next_open
 from market.bybit import BybitClient
+from market.strategy import make_trade_plan, summarize_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 FEATURES = ["open", "high", "low", "close", "volume", "amount"]
@@ -207,6 +208,9 @@ class TrainingDashboard:
                           context_length=len(history), horizon=len(timestamps),
                           origin_time=int(history["timestamps"].iloc[-1].timestamp()),
                           normalization="Each model normalizes only its historical context; future candles are not used.")
+            plan_settings = {key: self.evaluation.get(key, default) for key, default in (
+                ("fee_bps", 10), ("slippage_bps", 5), ("risk_fraction", .01),
+                ("max_position_fraction", .25), ("minimum_reward_risk", 1.5))}
             for index, kind in enumerate(("finetuned", "original")):
                 progress(.03 + index * .47, f"Sampling {kind} checkpoint")
                 sample_args = {key: value for key, value in self.sampling().items() if key != "batch_size"}
@@ -219,10 +223,13 @@ class TrainingDashboard:
                 times = [int(pd.Timestamp(t).timestamp()) for t in timestamps]
                 closes = samples[:, :, 3]
                 quantiles = np.quantile(closes, [.1, .5, .9], axis=0)
+                analysis = summarize_paths(closes, float(history["close"].iloc[-1]),
+                                           consensus_threshold=self.evaluation.get("consensus_threshold", .70))
                 result["models"][kind] = dict(
                     quantiles=[dict(time=t, p10=float(quantiles[0, j]), p50=float(quantiles[1, j]),
                                     p90=float(quantiles[2, j])) for j, t in enumerate(times)],
                     paths=[[dict(time=t, value=float(value)) for t, value in zip(times, path)] for path in closes],
+                    analysis=analysis, plan=make_trade_plan(analysis, closes, history, **plan_settings),
                 )
             with self.lock:
                 self.latest_forecast = result

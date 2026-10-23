@@ -48,6 +48,29 @@
         <p class="forecast-note" id="forecast-note">Forecasts stay fixed when actual candles refresh. Shaded sample paths and percentile bounds describe model outputs, not calibrated probabilities.</p>
       </section>
 
+      <p class="muted insight-origin" id="insight-origin">Fine-tuned checkpoint · generate a forecast to see its regime and scenario.</p>
+      <div class="insight-grid training-insights">
+        <section class="panel regime-panel" aria-labelledby="regime-heading">
+          <p class="eyebrow">01 / MARKET REGIME</p>
+          <div class="section-line"><h2 id="regime-heading">Waiting for forecast</h2><span id="direction" class="badge neutral">—</span></div>
+          <p class="muted" id="regime-description">Path agreement describes how the fine-tuned model's samples cluster.</p>
+          <div class="probability">
+            <div class="probability-labels"><span>Up <strong id="up-probability">—</strong></span><span>Down <strong id="down-probability">—</strong></span></div>
+            <div class="probability-track" data-ready="false" aria-hidden="true"><span id="probability-fill"></span><span id="probability-down"></span></div>
+          </div>
+          <dl class="metric-list"><div><dt>Directional agreement</dt><dd id="agreement">—</dd></div><div><dt>Median terminal return</dt><dd id="median-return">—</dd></div><div><dt>10th–90th return range</dt><dd id="return-range">—</dd></div></dl>
+          <p class="risk-note">These percentages describe generated paths, not calibrated market probabilities or the probability of profit.</p>
+        </section>
+        <section class="panel plan-panel" aria-labelledby="plan-heading">
+          <p class="eyebrow">02 / RULE-BASED SCENARIO</p>
+          <div class="section-line"><h2 id="plan-heading">Trade rules</h2><span id="plan-action" class="badge neutral">NO FORECAST</span></div>
+          <p class="muted" id="plan-description">Spot · long only · the experiment's saved fees, slippage and sizing rules.</p>
+          <dl class="price-rules"><div><dt>Entry estimate</dt><dd id="entry-price">—</dd></div><div><dt>Stop loss</dt><dd id="stop-price">—</dd></div><div><dt>Take profit</dt><dd id="target-price">—</dd></div></dl>
+          <ul class="reason-list" id="plan-reasons"><li>Generate a forecast to evaluate the fixed strategy rules.</li></ul>
+          <p id="plan-extra" class="risk-note">The automatic paper runner evaluates live candles using the fine-tuned checkpoint.</p>
+        </section>
+      </div>
+
       <section class="panel evaluation-panel" aria-labelledby="evaluation-heading">
         <div class="section-line"><div><p class="eyebrow">UNTOUCHED TEST PERIOD</p><h2 id="evaluation-heading">How does your checkpoint compare?</h2></div><button class="button subtle" type="button" id="refresh-report">Refresh evaluation</button></div>
         <p class="muted" id="evaluation-coverage">Loading saved evaluation report…</p>

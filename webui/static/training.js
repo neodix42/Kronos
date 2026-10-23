@@ -75,6 +75,7 @@
   }
   function showForecast(f) {
     state.forecast = f; displayActuals(f.history, true); projection(); fit();
+    renderInsights(f);
     const paired = Boolean(f.models?.original);
     $('original-legend').hidden = !paired;
     text('chart-eyebrow', paired ? 'CANDLES & MATCHED FORECASTS' : 'CANDLES & TRAINED FORECAST');
@@ -82,6 +83,46 @@
     text('forecast-origin', `${source} origin ${date(f.origin_time)} · ${f.sampling.sample_count} paths${paired ? ' per model' : ' · trained checkpoint'}`);
     text('forecast-note', `${f.normalization || 'Normalization uses only the historical context; future candle values are never supplied.'} ${paired ? '' : 'Trained checkpoint only. Use “Compare from live candles” for a matched original-model comparison. '}Forecasts remain fixed when actual candles refresh. Percentile bounds describe generated samples; they are not calibrated confidence intervals.`);
     if (f.source === 'paper_live') state.lastPaperOrigin = String(seconds(f.origin_time));
+  }
+  function renderInsights(f) {
+    const model = f.models?.finetuned || {};
+    const a = model.analysis || {};
+    const p = model.plan || {};
+    const source = f.source === 'paper_live' ? 'Automatic paper forecast' : f.source === 'live' ? 'Live comparison' : 'Dataset comparison';
+    text('insight-origin', `Fine-tuned checkpoint · ${source} · context through ${date(f.origin_time)}`);
+    text('regime-heading', a.regime || 'Analysis unavailable');
+    text('direction', a.direction);
+    $('direction').className = `badge ${a.direction === 'BULLISH' ? 'positive' : a.direction === 'BEARISH' ? 'negative' : 'neutral'}`;
+    const threshold = numeric(a.consensus_threshold) ? ` At least ${pct(a.consensus_threshold)} agreement is required for a trend.` : '';
+    text('regime-description', a.regime
+      ? `${a.regime === 'TRENDING' ? 'Sampled paths agree on a direction under the saved rule.' : 'Sampled paths do not meet the saved directional agreement threshold.'}${threshold}${a.flat_frequency > 0 ? ` Flat paths: ${pct(a.flat_frequency)}.` : ''}`
+      : 'Generate a new forecast to calculate the fine-tuned model’s regime and scenario.');
+    text('up-probability', pct(a.up_probability)); text('down-probability', pct(a.down_probability));
+    for (const [id, value] of [['probability-fill', a.up_probability], ['probability-down', a.down_probability]]) {
+      $(id).style.width = `${numeric(value) ? Math.max(0, Math.min(1, value)) * 100 : 0}%`;
+    }
+    $('probability-fill').parentElement.dataset.ready = String(Boolean(a.regime));
+    text('agreement', pct(a.agreement)); text('median-return', pct(a.terminal_return_p50));
+    $('median-return').className = numeric(a.terminal_return_p50) ? a.terminal_return_p50 > 0 ? 'text-positive' : a.terminal_return_p50 < 0 ? 'text-negative' : '' : '';
+    text('return-range', numeric(a.terminal_return_p10) && numeric(a.terminal_return_p90) ? `${pct(a.terminal_return_p10)} to ${pct(a.terminal_return_p90)}` : '—');
+    text('plan-action', p.action || 'NO SCENARIO');
+    $('plan-action').className = `badge ${p.action === 'BUY' ? 'positive' : 'neutral'}`;
+    text('entry-price', num(p.entry_estimate)); text('stop-price', num(p.stop_price)); text('target-price', num(p.take_profit_price));
+    text('plan-description', p.action
+      ? `Spot · long only · ${num(p.fee_bps)} bps fee + ${num(p.slippage_bps)} bps slippage per fill · minimum net reward/risk ${num(p.minimum_reward_risk)}.`
+      : 'Spot · long only · the experiment’s saved fees, slippage and sizing rules.');
+    const reasons = [p.reason, p.entry_rule, p.stop_rule, p.exit_rule].filter(Boolean);
+    if (!reasons.length) reasons.push('Generate a new forecast to evaluate the fixed strategy rules.');
+    $('plan-reasons').replaceChildren(...reasons.map((reason) => { const li = document.createElement('li'); li.textContent = reason; return li; }));
+    const details = [
+      numeric(p.reward_risk) ? `Net reward/risk: ${num(p.reward_risk)}.` : '',
+      numeric(p.position_fraction) ? `Planned allocation: ${pct(p.position_fraction)} of equity.` : '',
+      numeric(p.risk_fraction) ? `Estimated stop-risk budget: ${pct(p.risk_fraction)}.` : '',
+      numeric(p.max_position_fraction) ? `Allocation cap: ${pct(p.max_position_fraction)}.` : '',
+      `Horizon: ${f.horizon || state.status?.horizon || '—'} candles.`,
+      p.sizing_rule || '',
+    ].filter(Boolean);
+    text('plan-extra', details.join(' '));
   }
   function busy(value) {
     state.busy = value;

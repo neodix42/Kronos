@@ -207,6 +207,105 @@ def test_live_forecast_and_actual_refresh_never_modify_snapshot_or_report(api):
     assert service.latest_forecast is frozen_forecast
 
 
+@pytest.mark.parametrize("live", [False, True])
+def test_comparisons_include_each_models_regime_and_scenario(api, live):
+    client, service = api
+
+    class DirectionalEngine(FakeEngine):
+        def sample(self, *args, **kwargs):
+            samples = super().sample(*args, **kwargs)
+            samples[:, :, 3] *= 1.30 if self.model_path == str(service.checkpoint) else .90
+            return samples
+
+    service.engine_factory = DirectionalEngine
+    job = completed_job(client, service, live=live)
+    assert job["status"] == "completed", job
+    result = job["result"]
+    reference = result["history"][-1]["close"]
+    for kind, direction, action in (("finetuned", "BULLISH", "BUY"), ("original", "BEARISH", "WAIT")):
+        model = result["models"][kind]
+        summary, plan = model["analysis"], model["plan"]
+        assert summary["regime"] == "TRENDING"
+        assert summary["direction"] == direction
+        assert summary["reference_price"] == reference
+        assert summary["agreement"] == 1.
+        assert summary["sample_count"] == 3
+        assert summary["horizon"] == 2
+        assert summary["consensus_threshold"] == .70
+        assert summary["terminal_price_p50"] == model["quantiles"][-1]["p50"]
+        assert plan["action"] == action
+        assert plan["reference_price"] == reference
+        assert plan["market_type"] == "spot_long_only"
+        assert plan["fee_bps"] == 10
+        assert plan["slippage_bps"] == 5
+    assert "BEARISH" in result["models"]["original"]["plan"]["reason"]
+
+
+@pytest.mark.parametrize("threshold,regime", [(.60, "TRENDING"), (.80, "CHOPPY")])
+def test_comparison_regime_uses_experiment_consensus_threshold(api, threshold, regime):
+    client, service = api
+
+    class MixedEngine(FakeEngine):
+        def sample(self, *args, **kwargs):
+            samples = super().sample(*args, **kwargs)
+            samples[:, :, 3] *= np.array([1.30, 1.30, .90])[:, None]
+            return samples
+
+    service.engine_factory = MixedEngine
+    service.evaluation["consensus_threshold"] = threshold
+    job = completed_job(client, service)
+    assert job["status"] == "completed", job
+    for model in job["result"]["models"].values():
+        assert model["analysis"]["regime"] == regime
+        assert model["analysis"]["agreement"] == pytest.approx(2 / 3)
+        assert model["analysis"]["consensus_threshold"] == threshold
+        assert model["plan"]["action"] == ("BUY" if regime == "TRENDING" else "WAIT")
+
+
+@pytest.mark.parametrize("risk_fraction,minimum_reward_risk,action", [
+    (.004, 3., "BUY"), (.05, 3., "BUY"), (.004, 4., "WAIT"),
+])
+def test_comparison_scenario_uses_experiment_costs_and_risk_limits(api, risk_fraction, minimum_reward_risk, action):
+    client, service = api
+
+    class BullishEngine(FakeEngine):
+        def sample(self, *args, **kwargs):
+            samples = super().sample(*args, **kwargs)
+            samples[:, :, 3] *= 1.30
+            return samples
+
+    service.engine_factory = BullishEngine
+    service.evaluation.update(fee_bps=37, slippage_bps=21, risk_fraction=risk_fraction,
+                              max_position_fraction=.08, minimum_reward_risk=minimum_reward_risk)
+    job = completed_job(client, service)
+    assert job["status"] == "completed", job
+    reference = job["result"]["history"][-1]["close"]
+    # These candles have a true range of 5, making the ATR stop 7.5 below the
+    # reference. Costs apply on both sides before the minimum reward/risk check.
+    entry_fill = reference * 1.0021
+    entry_cost = entry_fill * 1.0037
+    stop = reference - 7.5
+    target = reference * 1.30
+    loss = entry_cost - stop * .9979 * .9963
+    reward = target * .9979 * .9963 - entry_cost
+    allocation = min(.08, risk_fraction * entry_cost / loss) if action == "BUY" else 0.
+    for model in job["result"]["models"].values():
+        plan = model["plan"]
+        assert plan["action"] == action
+        assert plan["entry_estimate"] == pytest.approx(entry_fill)
+        assert plan["stop_price"] == pytest.approx(stop)
+        assert plan["take_profit_price"] == pytest.approx(target)
+        assert plan["estimated_stop_loss_per_unit"] == pytest.approx(loss)
+        assert plan["estimated_net_reward_per_unit"] == pytest.approx(reward)
+        assert plan["reward_risk"] == pytest.approx(reward / loss)
+        assert plan["position_fraction"] == pytest.approx(allocation)
+        assert plan["risk_fraction"] == risk_fraction
+        assert plan["max_position_fraction"] == .08
+        assert plan["minimum_reward_risk"] == minimum_reward_risk
+        assert plan["fee_bps"] == 37
+        assert plan["slippage_bps"] == 21
+
+
 @pytest.mark.parametrize("body", [None, [], {"refresh_live": 1}, {"refresh_live": "yes"}, {"interval": "1d"}, {"model": "other"}])
 def test_invalid_forecast_requests_do_not_submit_work(api, body):
     client, service = api

@@ -264,6 +264,14 @@ The wizard then performs these steps automatically:
    does not modify training/test data. For a different interval, train a separate
    experiment with the appropriate data.
 
+The trained-model dashboard includes **01 / MARKET REGIME** and
+**02 / RULE-BASED SCENARIO** below the chart. Both describe the fine-tuned
+checkpoint in the displayed forecast, whether it comes from automatic paper
+trading, live comparison, or the frozen dataset. The source and context time
+appear above the panels. Regime agreement and return ranges describe generated
+samples; scenario levels and sizing use the experiment's saved costs and risk
+settings. A WAIT scenario may have no stop or target.
+
 For the default experiment, checkpoints, manifests, logs and evaluation results
 are under `finetune_csv/finetuned/my_btc_small/`. The main files are
 `basemodel/best_model/`, `training_manifest.json`, `evaluation/report.json`,
